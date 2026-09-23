@@ -1,0 +1,10 @@
+# dsh-approve-prefix 的 profile 装配层: 只插入插件自身的 Host 行.
+# 行为参数全部走代码默认值, 需要覆盖时在本行追加 config, 例如:
+#   - insert:
+#       - id: dsh-approve-prefix
+#         name: dsh-approve-prefix
+#         config:
+#           prefixes: ['gh api', 'gh pr view']
+- insert:
+    - id: dsh-approve-prefix
+      name: dsh-approve-prefix

@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "rootDir": "src/client",
+    "outDir": "lib/client",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "declaration": false,
+    "sourceMap": false,
+    "skipLibCheck": true,
+    "types": []
+  },
+  "include": ["src/client/**/*.ts"]
+}

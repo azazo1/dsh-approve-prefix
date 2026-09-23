@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "policy": "dsh-plugin-naming/v1",
+  "plugin": {
+    "namespace": "azazo1",
+    "name": "approve-prefix",
+    "coordinate": "azazo1/approve-prefix",
+    "packageName": "dsh-approve-prefix"
+  },
+  "names": {
+    "pluginNames": ["approve-prefix"],
+    "loaderIds": ["dsh-approve-prefix"],
+    "services": [],
+    "tools": [],
+    "commands": [
+      "approve-prefix-add",
+      "approve-prefix-rm",
+      "approve-prefix-list",
+      "approve-prefix-clear"
+    ],
+    "skills": [],
+    "skillProviders": [],
+    "events": [],
+    "settingsNamespaces": ["approve-prefix"],
+    "routes": []
+  }
+}
