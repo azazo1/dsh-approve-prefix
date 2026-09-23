@@ -16,6 +16,32 @@
  * @module dsh-approve-prefix
  */
 import type { PluginContext } from './host-types.js';
+import type { Volatile } from '@deepseek-ai/cordis';
+import z from '@deepseek-ai/schemastery';
+import type { PersistentPrefixEntry } from './prefix/settings.js';
+export interface Config {
+    prefixes: string[];
+    tools: string[];
+    allowedEscalationModes: string[];
+    extraDeniedCharacters: string[];
+    onlyEscalations: boolean;
+    temporaryPrefixLimit: number;
+    debug: boolean;
+    pendingCapacity: number;
+    persistentPrefixes: Volatile<PersistentPrefixEntry[]>;
+}
+interface ConfigInput {
+    prefixes?: string[];
+    tools?: string[];
+    allowedEscalationModes?: string[];
+    extraDeniedCharacters?: string[];
+    onlyEscalations?: boolean;
+    temporaryPrefixLimit?: number;
+    debug?: boolean;
+    pendingCapacity?: number;
+    persistentPrefixes?: PersistentPrefixEntry[];
+}
+export declare const Config: z<ConfigInput, Config>;
 /** 插件模块名. */
 export declare const name = "approve-prefix";
 /**
@@ -23,4 +49,5 @@ export declare const name = "approve-prefix";
  * @param ctx - dsh 的 Cordis Context.
  * @param rawConfig - profile 装配层的 config, 缺省时使用代码默认值.
  */
-export declare function apply(ctx: PluginContext, rawConfig?: unknown): void;
+export declare function apply(ctx: PluginContext, configInput: Config): void;
+export {};

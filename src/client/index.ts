@@ -11,8 +11,6 @@
 
 /** 插件包名, 必须与 package.json 的 name 以及 loader row 一致. */
 const PLUGIN_ID = 'dsh-approve-prefix'
-/** settings 命名空间, 与 `src/prefix/settings.ts` 的 SETTINGS_NAMESPACE 一致. */
-const SETTINGS_NAMESPACE = 'approve-prefix'
 /** locale 命名空间. */
 const LOCALE_NAMESPACE = 'dsh-approve-prefix'
 /** settings 字段名, 与 `src/prefix/settings.ts` 的 PERSISTENT_PREFIXES_FIELD 一致. */
@@ -93,12 +91,9 @@ interface SettingsScopeLike {
   set(field: string, value: unknown): unknown
 }
 
-/** 绑定好的 scope 与解码函数. */
-interface SettingsScopeFactory {
-  bind(options: {
-    namespace: string
-    decode: (section: unknown) => ApprovePrefixSettings | undefined
-  }): SettingsScopeLike
+/** ConfigForms 服务里本插件用到的最小 API. */
+interface ConfigFormsLike {
+  get<T>(namespace: string): SettingsScopeLike
 }
 
 /** slots 服务里本插件用到的最小 API. */
@@ -115,7 +110,7 @@ interface LocaleLike {
 
 /** client 半边拿到的 Context. */
 interface ClientContext {
-  settingsScope: SettingsScopeFactory
+  configForms: ConfigFormsLike
   slots: SlotsLike
   /** 读取未声明 inject 的可选服务, locale 缺席时回退到中文. */
   get?<T>(name: string): T | undefined
@@ -207,7 +202,7 @@ function validateEntry(
 /** 组装 client 半边. */
 function createFactory(require: (name: string) => unknown): unknown {
   return {
-    inject: ['settingsScope', 'slots'],
+    inject: ['configForms', 'slots'],
     apply(ctx: ClientContext): void {
       injectStyles()
       const React = require('react') as ReactLike
@@ -221,10 +216,7 @@ function createFactory(require: (name: string) => unknown): unknown {
         ? (key: string): string => zh[key as keyof typeof zh] ?? key
         : locale.bind(LOCALE_NAMESPACE)
 
-      const scope = ctx.settingsScope.bind({
-        namespace: SETTINGS_NAMESPACE,
-        decode: decodeSettings,
-      })
+      const scope = ctx.configForms.get<ApprovePrefixSettings>(PLUGIN_ID)
 
       const readStored = (): PersistentPrefixEntry[] => {
         const value = decodeSettings(scope.getSnapshot().value)

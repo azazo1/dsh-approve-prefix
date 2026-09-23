@@ -6,15 +6,14 @@
  *
  * @module dsh-approve-prefix/prefix/persistent
  */
-import type { SettingsScopeLike } from '../host-types.js';
 import { type PersistentPrefixEntry } from './settings.js';
-/** 基于 settings scope 的持久前缀表 (只读). */
+/** 基于当前插件 Config 的持久前缀表 (只读). */
 export declare class PersistentPrefixes {
     #private;
     /**
-     * @param scope - settings 服务返回的 owner scope.
+     * @param current - 每次判定时读取当前持久前缀值.
      */
-    constructor(scope: SettingsScopeLike);
+    constructor(current: () => unknown);
     /** 读出当前的持久前缀, 过滤掉结构不对的条目. */
     list(): PersistentPrefixEntry[];
     /**

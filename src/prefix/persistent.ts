@@ -7,23 +7,22 @@
  * @module dsh-approve-prefix/prefix/persistent
  */
 
-import type { SettingsScopeLike } from '../host-types.js'
 import { PERSISTENT_PREFIXES_FIELD, type PersistentPrefixEntry } from './settings.js'
 
-/** 基于 settings scope 的持久前缀表 (只读). */
+/** 基于当前插件 Config 的持久前缀表 (只读). */
 export class PersistentPrefixes {
-  readonly #scope: SettingsScopeLike
+  readonly #current: () => unknown
 
   /**
-   * @param scope - settings 服务返回的 owner scope.
+   * @param current - 每次判定时读取当前持久前缀值.
    */
-  constructor(scope: SettingsScopeLike) {
-    this.#scope = scope
+  constructor(current: () => unknown) {
+    this.#current = current
   }
 
   /** 读出当前的持久前缀, 过滤掉结构不对的条目. */
   list(): PersistentPrefixEntry[] {
-    const value: unknown = this.#scope.get()
+    const value: unknown = this.#current()
     if (typeof value !== 'object' || value === null) return []
     const entries = (value as Record<string, unknown>)[PERSISTENT_PREFIXES_FIELD]
     if (!Array.isArray(entries)) return []

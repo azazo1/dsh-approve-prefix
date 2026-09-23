@@ -22,8 +22,49 @@ import { createApprovePrefixCommands } from './commands/approve-prefix.js'
 import { normalizeConfig } from './config.js'
 import type { PluginContext } from './host-types.js'
 import { PersistentPrefixes } from './prefix/persistent.js'
-import { ApprovePrefixSettingsSchema, SETTINGS_NAMESPACE } from './prefix/settings.js'
 import { TemporaryPrefixes } from './prefix/temporary.js'
+import type { Volatile } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
+import type { PersistentPrefixEntry } from './prefix/settings.js'
+
+export interface Config {
+  prefixes: string[]
+  tools: string[]
+  allowedEscalationModes: string[]
+  extraDeniedCharacters: string[]
+  onlyEscalations: boolean
+  temporaryPrefixLimit: number
+  debug: boolean
+  pendingCapacity: number
+  persistentPrefixes: Volatile<PersistentPrefixEntry[]>
+}
+
+interface ConfigInput {
+  prefixes?: string[]
+  tools?: string[]
+  allowedEscalationModes?: string[]
+  extraDeniedCharacters?: string[]
+  onlyEscalations?: boolean
+  temporaryPrefixLimit?: number
+  debug?: boolean
+  pendingCapacity?: number
+  persistentPrefixes?: PersistentPrefixEntry[]
+}
+
+export const Config: z<ConfigInput, Config> = z.object({
+  prefixes: z.array(z.string()).default(['gh api']),
+  tools: z.array(z.string()).default(['bash']),
+  allowedEscalationModes: z.array(z.string()).default(['danger-full-access']),
+  extraDeniedCharacters: z.array(z.string()).default([]),
+  onlyEscalations: z.boolean().default(true),
+  temporaryPrefixLimit: z.number().step(1).min(1).default(32),
+  debug: z.boolean().default(false),
+  pendingCapacity: z.number().step(1).min(1).default(128),
+  persistentPrefixes: z.array(z.object({
+    tool: z.string(),
+    prefix: z.string(),
+  })).default([]).volatile(),
+})
 
 /** 插件模块名. */
 export const name = 'approve-prefix'
@@ -40,11 +81,13 @@ function readCommand(argumentsValue: unknown): string | undefined {
  * @param ctx - dsh 的 Cordis Context.
  * @param rawConfig - profile 装配层的 config, 缺省时使用代码默认值.
  */
-export function apply(ctx: PluginContext, rawConfig?: unknown): void {
-  const config = normalizeConfig(rawConfig)
+export function apply(ctx: PluginContext, configInput: Config): void {
+  const config = normalizeConfig(configInput)
   const pending = new PendingCommands(config.pendingCapacity)
   const temporary = new TemporaryPrefixes(config.temporaryPrefixLimit)
-  let persistent: PersistentPrefixes | undefined
+  const persistent = new PersistentPrefixes(() => ({
+    persistentPrefixes: configInput.persistentPrefixes.get(),
+  }))
 
   ctx.on('tools/pre-execute', async (execution, next) => {
     if (config.tools.includes(execution.name)) {
@@ -60,21 +103,15 @@ export function apply(ctx: PluginContext, rawConfig?: unknown): void {
    * settings 与 commands 都要等各自的服务就绪: 没有写进 inject 的服务在 apply 阶段读不到,
    * 直接读会让注册被静默跳过. 两个服务都是可选的, 缺席时插件的主体功能照常工作.
    */
-  ctx.inject(['settings'], (settingsCtx) => {
-    const settings = settingsCtx.settings
-    if (settings === undefined) return
-    const store = new PersistentPrefixes(settings.register(SETTINGS_NAMESPACE, ApprovePrefixSettingsSchema))
-    persistent = store
-    settingsCtx.inject(['commands'], (commandCtx) => {
-      const commands = commandCtx.commands
-      if (commands === undefined) return
-      const definitions = createApprovePrefixCommands({
-        staticPrefixes: config.prefixes,
-        tools: config.tools,
-        persistent: store,
-        temporary,
-      })
-      for (const definition of definitions) commandCtx.effect(() => commands.register(definition))
+  ctx.inject(['commands'], (commandCtx) => {
+    const commands = commandCtx.commands
+    if (commands === undefined) return
+    const definitions = createApprovePrefixCommands({
+      staticPrefixes: config.prefixes,
+      tools: config.tools,
+      persistent,
+      temporary,
     })
+    for (const definition of definitions) commandCtx.effect(() => commands.register(definition))
   })
 }

@@ -54,6 +54,7 @@ const KNOWN_KEYS: readonly string[] = [
   'temporaryPrefixLimit',
   'debug',
   'pendingCapacity',
+  'persistentPrefixes',
 ]
 
 /** 判断一个值是否是普通对象. */

@@ -11,7 +11,6 @@ import type {
   CommandDefinitionLike,
   CommandResultLike,
   InjectedContext,
-  SettingsScopeLike,
   ToolExecutionLike,
 } from '../src/host-types.ts'
 import { apply } from '../src/index.ts'
@@ -52,19 +51,9 @@ function createHost(rawConfig?: unknown, store: FakeSettingsStore = { persistent
   const logs: string[] = []
   const prepended: boolean[] = []
 
-  const settingsService = {
-    register(_namespace: string, schema: unknown): SettingsScopeLike {
-      if (schema === undefined) throw new Error('the plugin registered no settings schema')
-      return {
-        /** Host 半边只读: 这里返回的段落就是配置页面写下的那一份. */
-        get: (): ApprovePrefixSettings => ({ persistentPrefixes: store.persistentPrefixes.map(entry => ({ ...entry })) }),
-      }
-    },
-  }
 
   /* 自引用: inject 回调把同一个假 Context 交给插件, 于是回调里能读到已就绪的服务属性. */
   const ctx: InjectedContext = {
-    settings: settingsService,
     commands: {
       register(definition: CommandDefinitionLike): unknown {
         commands.push(definition)
@@ -93,7 +82,14 @@ function createHost(rawConfig?: unknown, store: FakeSettingsStore = { persistent
     },
   }
 
-  apply(ctx, rawConfig)
+  const configInput = {
+    ...(typeof rawConfig === 'object' && rawConfig !== null ? rawConfig : {}),
+    persistentPrefixes: {
+      get: (): ApprovePrefixSettings['persistentPrefixes'] =>
+        store.persistentPrefixes.map(entry => ({ ...entry })),
+    },
+  }
+  apply(ctx, configInput)
   if (!prepended.every(value => value)) throw new Error('the approval listener must be prepended')
 
   return {
