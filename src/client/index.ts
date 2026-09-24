@@ -167,8 +167,7 @@ interface LocaleLike {
 interface ClientContext {
   configForms: ConfigFormsLike
   slots: SlotsLike
-  /** 读取未声明 inject 的可选服务, locale 缺席时回退到中文. */
-  get?<T>(name: string): T | undefined
+  locale: LocaleLike
   effect?(callback: () => (() => void) | void, name?: string): void
 }
 
@@ -511,17 +510,13 @@ function cardFace(form: InstanceType<SettingsFormModelLike>): {
 /** 组装 client 半边. */
 function createFactory(require: (name: string) => unknown): unknown {
   return {
-    inject: ['configForms', 'slots'],
+    inject: ['configForms', 'slots', 'locale'],
     apply(ctx: ClientContext): void {
       injectStyles()
       const React = require('react') as ReactLike
       const primitives = require('@deepseek-ai/dsh-client-ui-primitives') as PrimitivesLike
-      /*
-       * cordis 不允许读取没有写进 inject 的服务属性, 所以这里用 get 取可选服务;
-       * locale 缺席时文案回退到中文词典.
-       */
-      const locale = ctx.get?.<LocaleLike>('locale')
-      locale?.register(LOCALE_NAMESPACE, { zh, en })
+      // 字典注册给官方表单框架的 t 用; 卡片的文案键都在 zh / en 里.
+      ctx.locale.register(LOCALE_NAMESPACE, { zh, en })
 
       const scope = ctx.configForms.get<ApprovePrefixSettings>(PLUGIN_ID)
       const form = new primitives.SettingsFormModel(scope, [persistentPrefixesField()])
