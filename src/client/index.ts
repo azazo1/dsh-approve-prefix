@@ -27,6 +27,7 @@ const DENIED_OPERATORS = ['|', ';', '&', '`', '$'] as const
 /** 简体中文词典, 也是键集合的来源. */
 const zh = {
   'description': '持久放行前缀: 命中的沙箱提权请求会被自动放行, 对所有会话生效并跨重启保留.',
+  'label': '持久放行前缀',
   'intro': '只放行单条命令, 含管道, 分号, &&, 重定向或命令替换的命令一律转人工. '
     + '只想在当前会话里临时放行, 用 /approve-prefix-add.',
   'column.tool': '工具名',
@@ -51,6 +52,7 @@ const zh = {
 /** English dictionary. */
 const en: Record<string, string> = {
   'description': 'Persistent allow prefixes: a matching sandbox escalation is approved automatically, in every session and across restarts.',
+  'label': 'Persistent allow prefixes',
   'intro': 'Only a single command qualifies; pipelines, semicolons, &&, redirection and command substitution always go to a human. '
     + 'For a prefix that lives only in the current session, use /approve-prefix-add.',
   'column.tool': 'Tool',
@@ -135,7 +137,12 @@ interface SettingsFormModelLike {
 interface PrimitivesLike {
   SettingsForm: (props: Record<string, unknown>) => unknown
   SettingsFormModel: SettingsFormModelLike
+  /** 官方标签控件, 用作 "已覆盖" 标记. */
   Tag: (props: Record<string, unknown>) => unknown
+  /** 官方单行输入框 (自带边框, 圆角与聚焦态). */
+  Input: (props: Record<string, unknown>) => unknown
+  /** 官方按钮. */
+  Button: (props: Record<string, unknown>) => unknown
 }
 
 /** settings scope 里本插件用到的最小 API. */
@@ -250,18 +257,18 @@ function persistentPrefixesField(): FieldSpecLike {
 
 /** 卡片字段与行编辑器的样式, 尺寸对齐官方 fields.module.css. */
 const CSS_TEXT = `
-[data-dsh-approve-prefix] .field {
+.field {
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 12px 0;
 }
-[data-dsh-approve-prefix] .head {
+.head {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-[data-dsh-approve-prefix] .label {
+.label {
   flex: 1;
   min-width: 0;
   color: var(--dsw-alias-label-primary);
@@ -269,12 +276,12 @@ const CSS_TEXT = `
   font-weight: 500;
   line-height: 1.5;
 }
-[data-dsh-approve-prefix] .badges {
+.badges {
   display: inline-flex;
   align-items: center;
   gap: 8px;
 }
-[data-dsh-approve-prefix] .reset {
+.reset {
   padding: 0;
   border: none;
   background: none;
@@ -284,87 +291,36 @@ const CSS_TEXT = `
   line-height: 1.5;
   cursor: pointer;
 }
-[data-dsh-approve-prefix] .reset:hover:not(:disabled) { color: var(--dsw-alias-label-primary); }
-[data-dsh-approve-prefix] .hint {
+.reset:hover:not(:disabled) { color: var(--dsw-alias-label-primary); }
+.hint {
   margin: 0;
   color: var(--dsw-alias-label-tertiary);
   font-size: 12px;
   line-height: 1.5;
 }
-[data-dsh-approve-prefix] .invalid {
+.invalid {
   margin: 0;
   color: var(--dsw-alias-state-error-primary);
   font-size: 12px;
   line-height: 1.5;
 }
-[data-dsh-approve-prefix] .intro {
-  margin: 0;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
-  line-height: 1.6;
-}
-[data-dsh-approve-prefix] .columns {
-  display: flex;
-  gap: 8px;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
-  line-height: 1.5;
-}
-[data-dsh-approve-prefix] .columns .tool { width: 160px; }
-[data-dsh-approve-prefix] .columns .prefix { flex: 1; }
-[data-dsh-approve-prefix] .columns .tail { width: 60px; }
-[data-dsh-approve-prefix] .row {
+.row {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-[data-dsh-approve-prefix] .row .tool { width: 160px; }
-[data-dsh-approve-prefix] .row .prefix { flex: 1; }
-[data-dsh-approve-prefix] .row input {
-  height: 34px;
-  padding: 0 12px;
-  border: 0.5px solid var(--dsw-alias-border-l4);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-layer-3);
-  color: var(--dsw-alias-label-primary);
-  font: inherit;
-  font-size: 13px;
-  line-height: 1.5;
-}
-[data-dsh-approve-prefix] .row input:focus-visible {
-  outline: none;
-  border-color: var(--dsw-alias-brand-primary);
-}
-[data-dsh-approve-prefix] .row input:disabled {
-  color: var(--dsw-alias-label-tertiary);
-  cursor: default;
-}
-[data-dsh-approve-prefix] .row button,
-[data-dsh-approve-prefix] .actions button {
-  height: 34px;
-  padding: 0 12px;
-  border: 0.5px solid var(--dsw-alias-border-l4);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-layer-3);
-  color: var(--dsw-alias-label-secondary);
-  font: inherit;
-  font-size: 13px;
-  line-height: 1.5;
-  cursor: pointer;
-}
-[data-dsh-approve-prefix] .row button:hover:not(:disabled),
-[data-dsh-approve-prefix] .actions button:hover:not(:disabled) {
-  color: var(--dsw-alias-label-primary);
-  border-color: var(--dsw-alias-border-l2);
-}
-[data-dsh-approve-prefix] .actions {
+.row .tool { width: 160px; flex: none; }
+.row .prefix { flex: 1; min-width: 0; }
+.actions {
   display: flex;
   gap: 8px;
+  padding-top: 2px;
 }
-[data-dsh-approve-prefix] .empty {
-  padding: 12px 0;
+.empty {
+  margin: 0;
+  padding: 2px 0;
   color: var(--dsw-alias-label-tertiary);
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.5;
 }
 `
@@ -386,7 +342,7 @@ function injectStyles(): void {
  * @returns 卡片组件.
  */
 function createCard(React: ReactLike, primitives: PrimitivesLike): (props: CardProps) => unknown {
-  const { SettingsForm, Tag } = primitives
+  const { SettingsForm, Tag, Input, Button } = primitives
   const el = (type: unknown, props?: Record<string, unknown> | null, ...children: unknown[]): unknown =>
     React.createElement(type, props, ...children)
 
@@ -413,24 +369,27 @@ function createCard(React: ReactLike, primitives: PrimitivesLike): (props: CardP
     }
 
     const rows = entries.map((entry, index) => el('div', { className: 'row', key: `row-${String(index)}` },
-      el('input', {
+      el(Input, {
         className: 'tool',
         value: entry.tool,
         placeholder: t('placeholder.tool'),
         'aria-label': t('column.tool'),
+        spellCheck: false,
         disabled,
         onChange: (event: { currentTarget: { value: string } }) => { update(index, { tool: event.currentTarget.value }) },
       }),
-      el('input', {
+      el(Input, {
         className: 'prefix',
         value: entry.prefix,
         placeholder: t('placeholder.prefix'),
         'aria-label': t('column.prefix'),
+        spellCheck: false,
         disabled,
         onChange: (event: { currentTarget: { value: string } }) => { update(index, { prefix: event.currentTarget.value }) },
       }),
-      el('button', {
-        type: 'button',
+      el(Button, {
+        variant: 'ghost',
+        size: 'sm',
         disabled,
         onClick: () => { write(entries.filter((_entry, position) => position !== index)) },
       }, t('action.remove'))))
@@ -443,17 +402,14 @@ function createCard(React: ReactLike, primitives: PrimitivesLike): (props: CardP
 
     return el('div', { className: 'field' },
       el('div', { className: 'head' },
-        el('span', { className: 'label' }, t('column.prefix')),
+        el('span', { className: 'label' }, t('label')),
         badges),
-      el('p', { className: 'intro' }, t('intro')),
-      el('div', { className: 'columns' },
-        el('span', { className: 'tool' }, t('column.tool')),
-        el('span', { className: 'prefix' }, t('column.prefix')),
-        el('span', { className: 'tail' }, '')),
-      ...(rows.length === 0 ? [el('div', { className: 'empty' }, t('empty'))] : rows),
+      el('p', { className: 'hint' }, t('intro')),
+      ...(rows.length === 0 ? [el('p', { className: 'empty' }, t('empty'))] : rows),
       el('div', { className: 'actions' },
-        el('button', {
-          type: 'button',
+        el(Button, {
+          variant: 'outline',
+          size: 'sm',
           disabled,
           onClick: () => { write([...entries, { tool: 'bash', prefix: '' }]) },
         }, t('action.add'))),
