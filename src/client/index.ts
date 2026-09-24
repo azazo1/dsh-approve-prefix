@@ -224,13 +224,13 @@ function parseLines(text: string): PersistentPrefixEntry[] {
 /**
  * 校验一条前缀.
  * @param entry - 待校验条目.
- * @returns 通过时为 undefined, 否则是失败原因.
+ * @returns 通过时为 undefined, 否则是失败原因的文案键.
  */
-function validateEntry(entry: PersistentPrefixEntry): 'toolEmpty' | 'prefixEmpty' | 'operator' | undefined {
-  if (entry.tool.trim() === '') return 'toolEmpty'
-  if (entry.prefix.trim() === '') return 'prefixEmpty'
+function validateEntry(entry: PersistentPrefixEntry): 'error.toolEmpty' | 'error.prefixEmpty' | 'error.operator' | undefined {
+  if (entry.tool.trim() === '') return 'error.toolEmpty'
+  if (entry.prefix.trim() === '') return 'error.prefixEmpty'
   for (const character of DENIED_OPERATORS) {
-    if (entry.prefix.includes(character)) return 'operator'
+    if (entry.prefix.includes(character)) return 'error.operator'
   }
   return undefined
 }
