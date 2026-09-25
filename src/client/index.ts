@@ -133,7 +133,15 @@ interface SettingsFormModelLike {
   }
 }
 
-/** 官方控件里本插件用到的两个. */
+/**
+ * 官方控件交给 React.createElement 时的取值面.
+ *
+ * 0.1.7-rc.2 起 `Button` 这类控件是 forwardRef 组件 (`typeof Button` 不再是普通函数),
+ * 本插件只把它当可渲染值传递, 所以这里不再假设它是可调用的函数组件.
+ */
+type RenderableComponent = ((props: Record<string, unknown>) => unknown) | { readonly $$typeof: symbol }
+
+/** 官方控件里本插件用到的几个. */
 interface PrimitivesLike {
   SettingsForm: (props: Record<string, unknown>) => unknown
   SettingsFormModel: SettingsFormModelLike
@@ -141,8 +149,8 @@ interface PrimitivesLike {
   Tag: (props: Record<string, unknown>) => unknown
   /** 官方单行输入框 (自带边框, 圆角与聚焦态). */
   Input: (props: Record<string, unknown>) => unknown
-  /** 官方按钮. */
-  Button: (props: Record<string, unknown>) => unknown
+  /** 官方按钮 (rc.2 起是 forwardRef 组件). */
+  Button: RenderableComponent
 }
 
 /** settings scope 里本插件用到的最小 API. */

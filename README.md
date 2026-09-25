@@ -98,13 +98,29 @@ approve-prefix:
 
 ## 安装
 
-```sh
-dsh plugin --profile web add ./dsh-approve-prefix
+插件同时有 Host 与 Client 半边 (后者提供配置页), 所以装完都要重启宿主进程, 让 client 产物被重新收取.
+
+### Web 端
+
+装进 `web` profile:
+
+```shell
+dsh plugin --profile web add azazo1/dsh-approve-prefix
 ```
 
-也可以用 `azazo1/dsh-approve-prefix` 从 GitHub 安装, 需要固定版本时写 `azazo1/dsh-approve-prefix#<tag>`.
+本地目录也能装, 把坐标换成目录路径即可 (`dsh plugin --profile web add ./dsh-approve-prefix`); 需要固定版本时写 `azazo1/dsh-approve-prefix#<tag>`.
 
-插件同时有 Host 与 Client 半边 (后者提供配置页), 安装或更新 client 产物后需要重启 `dsh web`.
+装完重启 `dsh web`, 浏览器里刷新一次页面.
+
+### 桌面端
+
+桌面端装进 `desktop` profile. 它由 Electron 应用独占管理, `dsh plugin` 会拒绝 `--profile desktop`, 所以要用应用内的插件管理器: 在插件页的安装入口填上面命令里对应的包名或本地目录. 装上后重启应用, 窗口刷新一次.
+
+### 引擎版本线
+
+要求 `@deepseek-ai/dsh-*` 不低于 `0.1.7-rc.2`, 且仍在 `0.1.x` 上 (声明了 dsh 依赖时 peerDependencies 与 devDependencies 都写作 `>=0.1.7-rc.2 <0.2.0`). 更早的引擎线装不上这个版本.
+
+web 与 desktop 两个 profile 跑的是同一套 Web 应用, 桌面端只是多起一个 Host 子进程并给 `<html>` 打上平台标记, 所以同一份包在两边通用, 不需要分别构建.
 
 ## 配置
 
