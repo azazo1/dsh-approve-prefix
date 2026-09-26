@@ -103,6 +103,18 @@ export interface ConnectionServiceLike {
   requestRejection(request: { headers: unknown }): 401 | 403 | undefined
 }
 
+/** 工具注册表里本插件要改的那一小段: 活的 parameters JSON Schema. */
+export interface ToolDefinitionLike {
+  /** 模型可见的参数 schema, 就地补 `approved` 字段. */
+  readonly parameters: unknown
+}
+
+/** tools 服务中本插件用到的方法. */
+export interface ToolsServiceLike {
+  /** 按名取当前可见的工具定义. */
+  get(name: string): ToolDefinitionLike | undefined
+}
+
 /** 本插件消费的最小 Context 形状. */
 export interface PluginContext {
   /** 注册 `tools/pre-execute` 监听器, 用于记下每次工具调用的命令原文. */
@@ -116,6 +128,8 @@ export interface PluginContext {
     listener: (request: ApprovalRequestLike, next: () => Promise<ApprovalOutcome>) => Promise<ApprovalOutcome>,
     options: { prepend: boolean },
   ): unknown
+  /** 工具注册或卸载时再给 bash / pwsh 补 `approved` 字段. */
+  on(event: 'tools/change', listener: () => void): unknown
   /** 等可选服务就绪后再执行回调, 不把该服务变成插件的硬依赖. */
   inject(dependencies: readonly string[], callback: (context: InjectedContext) => void): unknown
   /** 把注册动作登记为 effect, 插件卸载时自动清理. */
@@ -130,4 +144,5 @@ export interface InjectedContext extends PluginContext {
   readonly settings?: SettingsServiceLike
   readonly webServer?: WebServerLike
   readonly connection?: ConnectionServiceLike
+  readonly tools?: ToolsServiceLike
 }

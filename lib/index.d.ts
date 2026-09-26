@@ -3,9 +3,11 @@
  *
  * 插件做三件事:
  * 1. 在 `tools/pre-execute` 阶段记下每次工具调用的命令原文, 以 callId 为键;
- * 2. 以 `{ prepend: true }` 把应答器插到 `approval/request` 瀑布最前面, 只在命令命中放行
- *    前缀时返回 `allowed-once`, 其余一律 `next()` 交回人工审批 (见 approval/answerer.ts);
- * 3. 有 webServer 与 connection 时挂认证 HTTP, 给会话视图 tab 管理当前会话的临时前缀.
+ * 2. 以 `{ prepend: true }` 把应答器插到 `approval/request` 瀑布最前面, 命令命中放行前缀时
+ *    返回 `allowed-once`; 前缀未命中且参数里有 `approved: true` 时返回 `rejected`;
+ *    其余 `next()` 交回人工审批 (见 approval/answerer.ts);
+ * 3. 有 tools 服务时, 给 config.tools 里的工具参数 schema 补上 `approved`, 让模型看得见这个字段;
+ * 4. 有 webServer 与 connection 时挂认证 HTTP, 给会话视图 tab 管理当前会话的临时前缀.
  *
  * 放行前缀来自三处, 全部由用户显式给出: profile 装配层的静态 `prefixes`, settings 里由配置页
  * 维护的持久前缀, 以及只在当前会话生效的临时前缀. 插件不从审批结果里学任何东西:

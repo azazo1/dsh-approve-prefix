@@ -5,12 +5,14 @@
 
 import { describe, expect, test } from 'bun:test'
 
+import { APPROVED_PARAMETER_DESCRIPTION } from '../src/approval/approved-schema.ts'
 import type {
   ApprovalOutcome,
   ApprovalRequestLike,
   HttpRequestLike,
   HttpResponseLike,
   InjectedContext,
+  ToolDefinitionLike,
   ToolExecutionLike,
   WebServerRouteLike,
 } from '../src/host-types.ts'
@@ -41,7 +43,7 @@ interface HttpResult {
 /** 假 Context 暴露给测试的驱动接口. */
 interface FakeHost {
   /** 走一次 tools/pre-execute, 让插件记下命令. */
-  preExecute(execution: { callId: string; command: unknown; name?: string }): Promise<unknown>
+  preExecute(execution: { callId: string; command: unknown; name?: string; approved?: unknown }): Promise<unknown>
   /** 走一次 approval/request; humanOutcome 表示下游应答者给出的结果. */
   approve(request: ApprovalRequestLike, humanOutcome?: ApprovalOutcome): Promise<ApprovalOutcome>
   /** 走一次已注册的 HTTP 路由. */
@@ -52,6 +54,10 @@ interface FakeHost {
   setConnectionPresent(value: boolean): void
   /** 插件写下的日志. */
   logs: string[]
+  /** 当前某工具的 parameters, 用于看 schema 补丁. */
+  toolParameters(name: string): unknown
+  /** 模拟 bash 重新注册, 触发 tools/change. */
+  replaceTool(name: string, parameters: Record<string, unknown>): void
 }
 
 interface CreateHostOptions {
@@ -67,12 +73,17 @@ function createHost(
 ): FakeHost {
   const preExecuteListeners: Array<(execution: ToolExecutionLike, next: () => Promise<unknown>) => Promise<unknown>> = []
   const approvalListeners: Array<(request: ApprovalRequestLike, next: () => Promise<ApprovalOutcome>) => Promise<ApprovalOutcome>> = []
+  const changeListeners: Array<() => void> = []
   const routes: WebServerRouteLike[] = []
   const logs: string[] = []
   const prepended: boolean[] = []
   let rejection: 401 | 403 | undefined
   let connectionPresent = options.connection !== false
   const webEnabled = options.webServer !== false
+  const toolRegistry = new Map<string, ToolDefinitionLike>([
+    ['bash', { parameters: { type: 'object', properties: { command: { type: 'string' }, description: { type: 'string' } }, required: ['command', 'description'] } }],
+    ['pwsh', { parameters: { type: 'object', properties: { command: { type: 'string' }, description: { type: 'string' } }, required: ['command', 'description'] } }],
+  ])
 
   const connectionHandle = {
     requestRejection(): 401 | 403 | undefined {
@@ -84,7 +95,13 @@ function createHost(
   const ctx: InjectedContext = {
     get(name: string): unknown {
       if (name === 'connection') return connectionPresent ? connectionHandle : undefined
+      if (name === 'tools') return ctx.tools
       return undefined
+    },
+    tools: {
+      get(name: string): ToolDefinitionLike | undefined {
+        return toolRegistry.get(name)
+      },
     },
     webServer: webEnabled
       ? {
@@ -96,6 +113,7 @@ function createHost(
       : undefined,
     on(event: string, listener: unknown, options?: { prepend?: boolean }): unknown {
       if (event === 'tools/pre-execute') preExecuteListeners.push(listener as never)
+      if (event === 'tools/change') changeListeners.push(listener as () => void)
       if (event === 'approval/request') {
         approvalListeners.push(listener as never)
         prepended.push(options?.prepend === true)
@@ -106,6 +124,7 @@ function createHost(
       const ready = dependencies.every((dep) => {
         if (dep === 'webServer') return webEnabled
         if (dep === 'connection') return connectionPresent
+        if (dep === 'tools') return true
         return true
       })
       if (!ready) return undefined
@@ -134,11 +153,20 @@ function createHost(
 
   return {
     logs,
+    toolParameters(name) {
+      return toolRegistry.get(name)?.parameters
+    },
+    replaceTool(name, parameters) {
+      toolRegistry.set(name, { parameters })
+      for (const listener of changeListeners) listener()
+    },
     async preExecute(execution) {
+      const argumentsValue: Record<string, unknown> = { command: execution.command, description: 'test call' }
+      if ('approved' in execution) argumentsValue['approved'] = execution.approved
       const value: ToolExecutionLike = {
         name: execution.name ?? 'bash',
         callId: execution.callId,
-        arguments: { command: execution.command, description: 'test call' },
+        arguments: argumentsValue,
       }
       for (const listener of preExecuteListeners) {
         const result = await listener(value, async () => 'allow')
@@ -303,6 +331,65 @@ describe('静态前缀判定', () => {
     expect(() => createHost({ tools: [] })).toThrow(/must not be empty/)
     expect(() => createHost({ pendingCapacity: 0 })).toThrow(/pendingCapacity/)
     expect(() => createHost({ temporaryPrefixLimit: 0 })).toThrow(/temporaryPrefixLimit/)
+  })
+})
+
+describe('模型自报 approved: true', () => {
+  test('前缀未命中且写了布尔 true 时直接拒绝, 不转人工', async () => {
+    const host = createHost()
+    await host.preExecute({ callId: 'call-1', command: 'rm -rf /', approved: true })
+    expect(await host.approve(escalation('call-1'), 'cancelled')).toBe('rejected')
+  })
+
+  test('前缀未命中但没写 approved 时仍转人工', async () => {
+    const host = createHost()
+    await host.preExecute({ callId: 'call-1', command: 'rm -rf /' })
+    expect(await host.approve(escalation('call-1'), 'cancelled')).toBe('cancelled')
+  })
+
+  test('approved 不是布尔 true 时仍转人工', async () => {
+    const host = createHost()
+    await host.preExecute({ callId: 'call-1', command: 'rm -rf /', approved: 'true' })
+    expect(await host.approve(escalation('call-1'), 'cancelled')).toBe('cancelled')
+  })
+
+  test('前缀命中时即使写了 approved: true 也放行', async () => {
+    const host = createHost()
+    await host.preExecute({ callId: 'call-1', command: 'gh api user', approved: true })
+    expect(await host.approve(escalation('call-1'), 'cancelled')).toBe(HUMAN_ALLOW)
+  })
+
+  test('档位不在白名单时即使写了 approved: true 也转人工', async () => {
+    const host = createHost()
+    await host.preExecute({ callId: 'call-1', command: 'gh api user', approved: true })
+    expect(await host.approve(escalation('call-1', 'workspace-write'), 'cancelled')).toBe('cancelled')
+  })
+
+  test('pwsh 同样认 approved: true', async () => {
+    const host = createHost({ prefixes: [], tools: ['bash', 'pwsh'] })
+    await host.preExecute({ callId: 'call-1', command: 'rm -rf /', name: 'pwsh', approved: true })
+    expect(await host.approve({ ...escalation('call-1'), toolName: 'pwsh' }, 'cancelled')).toBe('rejected')
+  })
+
+  test('把 approved 补进 bash 的参数 schema', () => {
+    const host = createHost()
+    const parameters = host.toolParameters('bash') as { properties: { approved: { type: string; description: string } } }
+    expect(parameters.properties.approved.type).toBe('boolean')
+    expect(parameters.properties.approved.description).toBe(APPROVED_PARAMETER_DESCRIPTION)
+    expect((parameters as { required?: string[] }).required).not.toContain('approved')
+  })
+
+  test('默认不改 pwsh, 除非它在 tools 配置里', () => {
+    const host = createHost()
+    const parameters = host.toolParameters('pwsh') as { properties: { approved?: unknown } }
+    expect(parameters.properties.approved).toBeUndefined()
+  })
+
+  test('tools/change 后给重新注册的工具再补一次', () => {
+    const host = createHost()
+    host.replaceTool('bash', { type: 'object', properties: { command: { type: 'string' } } })
+    const parameters = host.toolParameters('bash') as { properties: { approved: { type: string } } }
+    expect(parameters.properties.approved.type).toBe('boolean')
   })
 })
 

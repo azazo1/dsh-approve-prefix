@@ -42,6 +42,7 @@ src/
 ├── config.ts                装配层 config 的默认值与校验, 非法配置直接抛错
 ├── approval/
 │   ├── answerer.ts          判定条件表 (纯函数) 与审批瀑布监听器
+│   ├── approved-schema.ts   给 bash / pwsh 参数 schema 补 approved
 │   ├── escalation.ts        提权理由里的目标档位解析
 │   └── pending-commands.ts  callId 到命令原文的有界一次性记录表
 ├── prefix/
@@ -58,7 +59,7 @@ src/
     └── index.ts             client 半边: Settings 配置页与会话 tab
 ```
 
-判定条件集中在 `approval/answerer.ts` 的 `decideApproval`, 顺序即文档顺序; 监听器只负责取命令, 记日志与返回 `allowed-once` 或 `next()`. 临时表由会话 tab 经认证 HTTP 整表替换; TUI / headless 没有这条管理面.
+判定条件集中在 `approval/answerer.ts` 的 `decideApproval`, 顺序即文档顺序; 监听器只负责取命令, 记日志, 返回 `allowed-once` / `rejected` / `next()`. 前缀未命中且参数 `approved === true` 时返回 `rejected`; 其余失败仍 `next()`. 临时表由会话 tab 经认证 HTTP 整表替换; TUI / headless 没有这条管理面.
 
 插件对宿主包零运行时依赖: `host-types.ts` 用结构类型描述 Context, 事件载荷与服务视图, 唯一的外部依赖是 settings schema 需要的 `@deepseek-ai/schemastery` (settings 服务在注册时直接调用 schema, 不做跨副本的类型判断, 所以插件自带一份不影响正确性).
 
@@ -70,6 +71,12 @@ client bundle 必须是自包含的普通脚本, 不能出现 `import`/`export`,
 - settings 命名空间与字段名在 client 里内联了一份, 与 `src/prefix/settings.ts` 是同一份契约, 改动必须两边一起改 (文件顶部有同步注释).
 - 持久前缀注册在 `plugins.bundle.config` 槽上; 临时前缀注册在 `conversation.view` 槽上. 标题与文案走 client locale (zh / en), locale 服务缺席时回退中文.
 - 读取未写进 `inject` 的可选服务要用 `ctx.get(...)`: cordis 不允许直接读未声明 inject 的服务属性.
+
+## 模型自报 `approved: true`
+
+模型只填 schema 里出现的字段. 本插件在 `tools` 服务就绪后, 就地给 `config.tools` 里那些工具的 `parameters.properties` 补上可选布尔 `approved`; bash 会在 jobs 服务出现后重新注册, 所以还要听 `tools/change` 再补一次. 官方工具包本身不改.
+
+它不能用来骗放行: 前缀命中时本来就会 `allowed-once`, 与有没有这个字段无关. 它只改变 "前缀未命中" 的失败路径: 写了严格布尔 `true` 就 `rejected` (模型已经自称批准, 不再打扰人), 没写或值不对仍弹人工. 档位不在白名单, 不是提权, 或命令没记下, 即使带了这个字段也还是转人工.
 
 ## 已知边界
 
