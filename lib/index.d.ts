@@ -5,7 +5,7 @@
  * 1. 在 `tools/pre-execute` 阶段记下每次工具调用的命令原文, 以 callId 为键;
  * 2. 以 `{ prepend: true }` 把应答器插到 `approval/request` 瀑布最前面, 只在命令命中放行
  *    前缀时返回 `allowed-once`, 其余一律 `next()` 交回人工审批 (见 approval/answerer.ts);
- * 3. 注册四条 `/approve-prefix-*` 命令, 管理当前会话的临时前缀.
+ * 3. 有 webServer 与 connection 时挂认证 HTTP, 给会话视图 tab 管理当前会话的临时前缀.
  *
  * 放行前缀来自三处, 全部由用户显式给出: profile 装配层的静态 `prefixes`, settings 里由配置页
  * 维护的持久前缀, 以及只在当前会话生效的临时前缀. 插件不从审批结果里学任何东西:

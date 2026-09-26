@@ -1,6 +1,6 @@
 /**
- * 插件接线测试: 用假 Context 驱动 pre-execute 与审批瀑布, 断言放行, 转人工, 持久前缀与
- * 会话级临时前缀的各条分支.
+ * 插件接线测试: 用假 Context 驱动 pre-execute, 审批瀑布与会话前缀 HTTP, 断言放行,
+ * 转人工, 持久前缀与会话级临时前缀的各条分支.
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -8,13 +8,15 @@ import { describe, expect, test } from 'bun:test'
 import type {
   ApprovalOutcome,
   ApprovalRequestLike,
-  CommandDefinitionLike,
-  CommandResultLike,
+  HttpRequestLike,
+  HttpResponseLike,
   InjectedContext,
   ToolExecutionLike,
+  WebServerRouteLike,
 } from '../src/host-types.ts'
 import { apply } from '../src/index.ts'
 import type { ApprovePrefixSettings, PersistentPrefixEntry } from '../src/prefix/settings.ts'
+import { prefixesPath } from '../src/session-api/paths.ts'
 
 /** 人工拒绝在测试里的占位结果. */
 const HUMAN_REJECT: ApprovalOutcome = 'rejected'
@@ -29,37 +31,69 @@ interface FakeSettingsStore {
   persistentPrefixes: PersistentPrefixEntry[]
 }
 
+/** 假 HTTP 响应. */
+interface HttpResult {
+  status: number
+  headers: Record<string, string>
+  body: string
+}
+
 /** 假 Context 暴露给测试的驱动接口. */
 interface FakeHost {
   /** 走一次 tools/pre-execute, 让插件记下命令. */
   preExecute(execution: { callId: string; command: unknown; name?: string }): Promise<unknown>
   /** 走一次 approval/request; humanOutcome 表示下游应答者给出的结果. */
   approve(request: ApprovalRequestLike, humanOutcome?: ApprovalOutcome): Promise<ApprovalOutcome>
-  /** 执行插件注册的斜杠命令; sessionKey 传 null 表示这次调用没有会话身份. */
-  runCommand(name: string, rawInput?: string, sessionKey?: string | null): Promise<CommandResultLike>
-  /** 插件注册的命令名. */
-  commandNames(): string[]
+  /** 走一次已注册的 HTTP 路由. */
+  request(method: string, url: string, init?: { body?: unknown; headers?: Record<string, string> }): Promise<HttpResult>
+  /** 之后的请求按这个结果拒绝; undefined 表示过关. */
+  setRejection(value: 401 | 403 | undefined): void
+  /** 之后的请求拿不到 connection 服务. */
+  setConnectionPresent(value: boolean): void
   /** 插件写下的日志. */
   logs: string[]
 }
 
-/** 用最小结构实现 Context, 记录监听器与命令, 并在测试里手动触发. */
-function createHost(rawConfig?: unknown, store: FakeSettingsStore = { persistentPrefixes: [] }): FakeHost {
+interface CreateHostOptions {
+  webServer?: boolean
+  connection?: boolean
+}
+
+/** 用最小结构实现 Context, 记录监听器与路由, 并在测试里手动触发. */
+function createHost(
+  rawConfig?: unknown,
+  store: FakeSettingsStore = { persistentPrefixes: [] },
+  options: CreateHostOptions = {},
+): FakeHost {
   const preExecuteListeners: Array<(execution: ToolExecutionLike, next: () => Promise<unknown>) => Promise<unknown>> = []
   const approvalListeners: Array<(request: ApprovalRequestLike, next: () => Promise<ApprovalOutcome>) => Promise<ApprovalOutcome>> = []
-  const commands: CommandDefinitionLike[] = []
+  const routes: WebServerRouteLike[] = []
   const logs: string[] = []
   const prepended: boolean[] = []
+  let rejection: 401 | 403 | undefined
+  let connectionPresent = options.connection !== false
+  const webEnabled = options.webServer !== false
 
+  const connectionHandle = {
+    requestRejection(): 401 | 403 | undefined {
+      return rejection
+    },
+  }
 
   /* 自引用: inject 回调把同一个假 Context 交给插件, 于是回调里能读到已就绪的服务属性. */
   const ctx: InjectedContext = {
-    commands: {
-      register(definition: CommandDefinitionLike): unknown {
-        commands.push(definition)
-        return () => {}
-      },
+    get(name: string): unknown {
+      if (name === 'connection') return connectionPresent ? connectionHandle : undefined
+      return undefined
     },
+    webServer: webEnabled
+      ? {
+        register(route: WebServerRouteLike): unknown {
+          routes.push(route)
+          return () => {}
+        },
+      }
+      : undefined,
     on(event: string, listener: unknown, options?: { prepend?: boolean }): unknown {
       if (event === 'tools/pre-execute') preExecuteListeners.push(listener as never)
       if (event === 'approval/request') {
@@ -68,7 +102,13 @@ function createHost(rawConfig?: unknown, store: FakeSettingsStore = { persistent
       }
       return () => {}
     },
-    inject(_dependencies: readonly string[], callback: (context: InjectedContext) => void): unknown {
+    inject(dependencies: readonly string[], callback: (context: InjectedContext) => void): unknown {
+      const ready = dependencies.every((dep) => {
+        if (dep === 'webServer') return webEnabled
+        if (dep === 'connection') return connectionPresent
+        return true
+      })
+      if (!ready) return undefined
       callback(ctx)
       return undefined
     },
@@ -117,15 +157,58 @@ function createHost(rawConfig?: unknown, store: FakeSettingsStore = { persistent
       if (first === undefined) return humanOutcome
       return first(request, next)
     },
-    async runCommand(name, rawInput = '', sessionKey = FIRST_SESSION as string | null) {
-      const definition = commands.find(candidate => candidate.name === name)
-      if (definition === undefined) throw new Error(`the plugin registered no ${name} command`)
-      return definition.handler({ rawInput, agent: sessionKey === null ? undefined : { session: { id: sessionKey } } })
+    async request(method, url, init) {
+      const pathname = url.split('?')[0] ?? url
+      const route = matchRoute(routes, pathname)
+      if (route === undefined) return { status: 404, headers: {}, body: '' }
+      const bodyText = init?.body === undefined ? '' : JSON.stringify(init.body)
+      const headers: Record<string, string> = { ...init?.headers }
+      if (init?.body !== undefined && headers['content-type'] === undefined) headers['content-type'] = 'application/json'
+      const req: HttpRequestLike = {
+        method,
+        url,
+        headers,
+        async *[Symbol.asyncIterator]() {
+          if (bodyText !== '') yield bodyText
+        },
+      }
+      const state: HttpResult = { status: 0, headers: {}, body: '' }
+      const res: HttpResponseLike = {
+        writeHead(status, responseHeaders) {
+          state.status = status
+          state.headers = responseHeaders ?? {}
+        },
+        end(chunk) {
+          state.body = chunk ?? ''
+        },
+      }
+      await route.handler(req, res)
+      return state
     },
-    commandNames() {
-      return commands.map(definition => definition.name)
+    setRejection(value) {
+      rejection = value
+    },
+    setConnectionPresent(value) {
+      connectionPresent = value
     },
   }
+}
+
+function matchRoute(routes: readonly WebServerRouteLike[], pathname: string): WebServerRouteLike | undefined {
+  const exact = routes.find(route => route.kind === 'exact' && route.path === pathname)
+  if (exact !== undefined) return exact
+  let best: WebServerRouteLike | undefined
+  for (const route of routes) {
+    if (route.kind !== 'prefix') continue
+    if (pathname === route.path || pathname.startsWith(`${route.path}/`)) {
+      if (best === undefined || route.path.length > best.path.length) best = route
+    }
+  }
+  return best
+}
+
+function payloadOf(result: HttpResult): { entries: PersistentPrefixEntry[]; defaultTool: string; limit: number } {
+  return JSON.parse(result.body) as { entries: PersistentPrefixEntry[]; defaultTool: string; limit: number }
 }
 
 /** 构造一次沙箱提权审批请求. */
@@ -273,10 +356,11 @@ describe('持久前缀 (来自 settings)', () => {
 })
 
 describe('会话级临时前缀', () => {
-  test('临时前缀只对执行命令的那个会话生效', async () => {
+  test('临时前缀只对写入的那个会话生效', async () => {
     const store: FakeSettingsStore = { persistentPrefixes: [] }
     const host = createHost({ prefixes: [] }, store)
-    expect((await host.runCommand('approve-prefix-add', 'gh api', FIRST_SESSION)).kind).toBe('success')
+    const put = await host.request('PUT', prefixesPath(FIRST_SESSION), { body: { entries: [{ tool: 'bash', prefix: 'gh api' }] } })
+    expect(put.status).toBe(200)
     expect(store.persistentPrefixes).toEqual([])
     await host.preExecute({ callId: 'call-1', command: 'gh api user' })
     expect(await host.approve(escalation('call-1', 'danger-full-access', FIRST_SESSION))).toBe(HUMAN_ALLOW)
@@ -287,7 +371,7 @@ describe('会话级临时前缀', () => {
   test('临时前缀不跨实例保留', async () => {
     const store: FakeSettingsStore = { persistentPrefixes: [] }
     const first = createHost({ prefixes: [] }, store)
-    await first.runCommand('approve-prefix-add', 'gh api')
+    await first.request('PUT', prefixesPath(FIRST_SESSION), { body: { entries: [{ tool: 'bash', prefix: 'gh api' }] } })
     await first.preExecute({ callId: 'call-1', command: 'gh api user' })
     expect(await first.approve(escalation('call-1'))).toBe(HUMAN_ALLOW)
 
@@ -296,89 +380,104 @@ describe('会话级临时前缀', () => {
     expect(await restarted.approve(escalation('call-2'))).toBe(HUMAN_REJECT)
   })
 
-  test('临时命令不会改动 settings', async () => {
+  test('临时写入不会改动 settings', async () => {
     const store: FakeSettingsStore = { persistentPrefixes: [{ tool: 'bash', prefix: 'gh api' }] }
     const host = createHost({ prefixes: [] }, store)
-    await host.runCommand('approve-prefix-add', 'npm run')
-    await host.runCommand('approve-prefix-rm', 'npm run')
-    await host.runCommand('approve-prefix-clear')
+    await host.request('PUT', prefixesPath(FIRST_SESSION), { body: { entries: [{ tool: 'bash', prefix: 'npm run' }] } })
+    await host.request('PUT', prefixesPath(FIRST_SESSION), { body: { entries: [] } })
     expect(store.persistentPrefixes).toEqual([{ tool: 'bash', prefix: 'gh api' }])
     await host.preExecute({ callId: 'call-1', command: 'gh api user' })
     expect(await host.approve(escalation('call-1'))).toBe(HUMAN_ALLOW)
   })
 
-  test('rm 与 clear 只影响当前会话', async () => {
+  test('PUT 清空只影响当前会话', async () => {
     const store: FakeSettingsStore = { persistentPrefixes: [] }
     const host = createHost({ prefixes: [] }, store)
-    await host.runCommand('approve-prefix-add', 'npm run', FIRST_SESSION)
-    await host.runCommand('approve-prefix-add', 'npm run', SECOND_SESSION)
-    expect((await host.runCommand('approve-prefix-rm', 'npm run', FIRST_SESSION)).kind).toBe('success')
+    await host.request('PUT', prefixesPath(FIRST_SESSION), { body: { entries: [{ tool: 'bash', prefix: 'npm run' }] } })
+    await host.request('PUT', prefixesPath(SECOND_SESSION), { body: { entries: [{ tool: 'bash', prefix: 'npm run' }] } })
+    expect((await host.request('PUT', prefixesPath(FIRST_SESSION), { body: { entries: [] } })).status).toBe(200)
     await host.preExecute({ callId: 'call-1', command: 'npm run build' })
     expect(await host.approve(escalation('call-1', 'danger-full-access', FIRST_SESSION))).toBe(HUMAN_REJECT)
     await host.preExecute({ callId: 'call-2', command: 'npm run build' })
     expect(await host.approve(escalation('call-2', 'danger-full-access', SECOND_SESSION))).toBe(HUMAN_ALLOW)
-
-    await host.runCommand('approve-prefix-clear', '', SECOND_SESSION)
-    await host.preExecute({ callId: 'call-3', command: 'npm run build' })
-    expect(await host.approve(escalation('call-3', 'danger-full-access', SECOND_SESSION))).toBe(HUMAN_REJECT)
   })
 
-  test('命令调用没有会话身份时拒绝临时操作', async () => {
-    const host = createHost({ prefixes: [] })
-    expect((await host.runCommand('approve-prefix-add', 'gh api', null)).kind).toBe('error')
-    expect((await host.runCommand('approve-prefix-rm', 'gh api', null)).kind).toBe('error')
-    expect((await host.runCommand('approve-prefix-clear', '', null)).kind).toBe('error')
-  })
-})
-
-describe('/approve-prefix-* 命令', () => {
-  test('只注册 add / rm / list / clear 四条会话级命令', () => {
-    const host = createHost()
-    expect(host.commandNames()).toEqual([
-      'approve-prefix-add',
-      'approve-prefix-rm',
-      'approve-prefix-list',
-      'approve-prefix-clear',
-    ])
-  })
-
-  test('list 同时给出静态, 持久与当前会话的条目', async () => {
-    const store: FakeSettingsStore = { persistentPrefixes: [{ tool: 'bash', prefix: 'gh pr view' }] }
-    const host = createHost({ prefixes: ['gh api'] }, store)
-    await host.runCommand('approve-prefix-add', 'npm run')
-    const result = await host.runCommand('approve-prefix-list')
-    expect(result.kind).toBe('success')
-    expect(result.text).toContain('gh api')
-    expect(result.text).toContain('bash: gh pr view')
-    expect(result.text).toContain('bash: npm run')
-  })
-
-  test('add 与 rm 回显当前会话的条目', async () => {
-    const host = createHost({ prefixes: [] })
-    const added = await host.runCommand('approve-prefix-add', 'gh api')
-    expect(added.kind).toBe('success')
-    expect(added.text).toContain('bash: gh api')
-    const removed = await host.runCommand('approve-prefix-rm', 'gh api')
-    expect(removed.kind).toBe('success')
-    expect(removed.text).toContain('(无)')
-  })
-
-  test('临时命令可以用 tool: prefix 指定工具', async () => {
+  test('可以用非默认工具名写入临时前缀', async () => {
     const store: FakeSettingsStore = { persistentPrefixes: [] }
     const host = createHost({ prefixes: [], tools: ['bash', 'pwsh'] }, store)
-    expect((await host.runCommand('approve-prefix-add', 'pwsh: gh api')).kind).toBe('success')
+    expect((await host.request('PUT', prefixesPath(FIRST_SESSION), { body: { entries: [{ tool: 'pwsh', prefix: 'gh api' }] } })).status).toBe(200)
     await host.preExecute({ callId: 'call-1', command: 'gh api user', name: 'pwsh' })
     expect(await host.approve({ ...escalation('call-1'), toolName: 'pwsh' })).toBe(HUMAN_ALLOW)
     await host.preExecute({ callId: 'call-2', command: 'gh api user' })
     expect(await host.approve(escalation('call-2'))).toBe(HUMAN_REJECT)
   })
+})
 
-  test('参数缺失或非法时返回错误', async () => {
-    const host = createHost()
-    expect((await host.runCommand('approve-prefix-add')).kind).toBe('error')
-    expect((await host.runCommand('approve-prefix-add', 'gh api | jq')).kind).toBe('error')
-    expect((await host.runCommand('approve-prefix-rm', 'gh api')).kind).toBe('error')
-    expect((await host.runCommand('approve-prefix-list', 'extra')).kind).toBe('error')
-    expect((await host.runCommand('approve-prefix-clear', 'extra')).kind).toBe('error')
+describe('会话临时前缀 HTTP', () => {
+  test('鉴权拒绝时不改表', async () => {
+    const host = createHost({ prefixes: [] })
+    host.setRejection(401)
+    const denied = await host.request('PUT', prefixesPath(FIRST_SESSION), { body: { entries: [{ tool: 'bash', prefix: 'gh api' }] } })
+    expect(denied.status).toBe(401)
+    host.setRejection(undefined)
+    const listed = await host.request('GET', prefixesPath(FIRST_SESSION))
+    expect(listed.status).toBe(200)
+    expect(payloadOf(listed).entries).toEqual([])
+  })
+
+  test('connection 缺席 fail-closed 为 503', async () => {
+    const host = createHost({ prefixes: [] })
+    host.setConnectionPresent(false)
+    const result = await host.request('GET', prefixesPath(FIRST_SESSION))
+    expect(result.status).toBe(503)
+  })
+
+  test('GET 与 PUT 读写同一会话, 跨会话互不可见', async () => {
+    const host = createHost({ prefixes: [] })
+    const put = await host.request('PUT', prefixesPath(FIRST_SESSION), { body: { entries: [{ tool: 'bash', prefix: 'gh api' }] } })
+    expect(put.status).toBe(200)
+    expect(payloadOf(put).entries).toEqual([{ tool: 'bash', prefix: 'gh api' }])
+    expect(payloadOf(put).defaultTool).toBe('bash')
+    expect(payloadOf(put).limit).toBe(32)
+    const other = await host.request('GET', prefixesPath(SECOND_SESSION))
+    expect(payloadOf(other).entries).toEqual([])
+    const same = await host.request('GET', prefixesPath(FIRST_SESSION))
+    expect(payloadOf(same).entries).toEqual([{ tool: 'bash', prefix: 'gh api' }])
+  })
+
+  test('非法前缀 400 且不改表', async () => {
+    const host = createHost({ prefixes: [] })
+    await host.request('PUT', prefixesPath(FIRST_SESSION), { body: { entries: [{ tool: 'bash', prefix: 'gh api' }] } })
+    const invalid = await host.request('PUT', prefixesPath(FIRST_SESSION), { body: { entries: [{ tool: 'bash', prefix: 'gh api | jq' }] } })
+    expect(invalid.status).toBe(400)
+    const listed = await host.request('GET', prefixesPath(FIRST_SESSION))
+    expect(payloadOf(listed).entries).toEqual([{ tool: 'bash', prefix: 'gh api' }])
+  })
+
+  test('超限拒绝且不改表', async () => {
+    const host = createHost({ prefixes: [], temporaryPrefixLimit: 1 })
+    await host.request('PUT', prefixesPath(FIRST_SESSION), { body: { entries: [{ tool: 'bash', prefix: 'gh api' }] } })
+    const over = await host.request('PUT', prefixesPath(FIRST_SESSION), {
+      body: { entries: [{ tool: 'bash', prefix: 'gh api' }, { tool: 'bash', prefix: 'npm run' }] },
+    })
+    expect(over.status).toBe(400)
+    const listed = await host.request('GET', prefixesPath(FIRST_SESSION))
+    expect(payloadOf(listed).entries).toEqual([{ tool: 'bash', prefix: 'gh api' }])
+  })
+
+  test('对不上的会话路径是 404', async () => {
+    const host = createHost({ prefixes: [] })
+    const missing = await host.request('GET', '/api/plugins/dsh-approve-prefix/sessions')
+    expect(missing.status).toBe(404)
+    const badId = await host.request('GET', '/api/plugins/dsh-approve-prefix/sessions/not valid/prefixes')
+    expect(badId.status).toBe(404)
+  })
+
+  test('没有 webServer 时审批照常', async () => {
+    const host = createHost({ prefixes: ['gh api'] }, { persistentPrefixes: [] }, { webServer: false })
+    await host.preExecute({ callId: 'call-1', command: 'gh api user' })
+    expect(await host.approve(escalation('call-1'))).toBe(HUMAN_ALLOW)
+    const listed = await host.request('GET', prefixesPath(FIRST_SESSION))
+    expect(listed.status).toBe(404)
   })
 })

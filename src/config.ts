@@ -36,7 +36,7 @@ export interface PluginConfig {
   readonly extraDeniedCharacters: readonly string[]
   /** 为 false 时, 非提权来源的审批请求也按同一套命令规则应答. */
   readonly onlyEscalations: boolean
-  /** `/approve-prefix-add` 加入的会话级临时前缀, 每个会话最多保留多少条. */
+  /** 每个会话的临时前缀条数上限. UI 写入达到上限时拒绝新增; 判定侧 learn 仍会淘汰最旧一条. */
   readonly temporaryPrefixLimit: number
   /** 为 true 时输出判定细节日志. */
   readonly debug: boolean

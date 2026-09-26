@@ -71,4 +71,47 @@ describe('TemporaryPrefixes', () => {
     expect(allowlist.forTool(SECOND, 'bash')).toEqual(['gh api'])
     expect(allowlist.forTool('session-third', 'bash')).toEqual(['gh api'])
   })
+
+  test('replace 整表写入并保序', () => {
+    const allowlist = new TemporaryPrefixes(8)
+    expect(allowlist.replace(FIRST, [
+      { tool: 'bash', prefix: 'npm run' },
+      { tool: 'pwsh', prefix: 'gh api' },
+    ])).toBeUndefined()
+    expect(allowlist.list(FIRST)).toEqual([
+      { tool: 'bash', prefix: 'npm run' },
+      { tool: 'pwsh', prefix: 'gh api' },
+    ])
+  })
+
+  test('replace 校验失败或超限时不改表', () => {
+    const allowlist = new TemporaryPrefixes(1)
+    allowlist.learn(FIRST, 'bash', 'gh api')
+    expect(allowlist.replace(FIRST, [{ tool: 'bash', prefix: 'gh api | jq' }])).toBe('operator')
+    expect(allowlist.replace(FIRST, [{ tool: '', prefix: 'gh api' }])).toBe('empty-tool')
+    expect(allowlist.replace(FIRST, [
+      { tool: 'bash', prefix: 'gh api' },
+      { tool: 'bash', prefix: 'npm run' },
+    ])).toBe('limit')
+    expect(allowlist.list(FIRST)).toEqual([{ tool: 'bash', prefix: 'gh api' }])
+  })
+
+  test('replace 重复条目不改表', () => {
+    const allowlist = new TemporaryPrefixes(8)
+    allowlist.learn(FIRST, 'bash', 'keep')
+    expect(allowlist.replace(FIRST, [
+      { tool: 'bash', prefix: 'gh api' },
+      { tool: 'bash', prefix: 'gh api' },
+    ])).toBe('duplicate')
+    expect(allowlist.list(FIRST)).toEqual([{ tool: 'bash', prefix: 'keep' }])
+  })
+
+  test('replace 空表清空当前会话', () => {
+    const allowlist = new TemporaryPrefixes(8)
+    allowlist.learn(FIRST, 'bash', 'gh api')
+    allowlist.learn(SECOND, 'bash', 'npm run')
+    expect(allowlist.replace(FIRST, [])).toBeUndefined()
+    expect(allowlist.list(FIRST)).toEqual([])
+    expect(allowlist.list(SECOND)).toEqual([{ tool: 'bash', prefix: 'npm run' }])
+  })
 })

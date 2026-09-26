@@ -13,7 +13,7 @@ typecheck:
     pnpm run typecheck
 
 # just test
-# 运行命令判定, 前缀表与插件接线测试.
+# 运行命令判定, 前缀表, HTTP 与插件接线测试.
 test:
     bun test tests
 

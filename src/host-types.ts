@@ -1,9 +1,11 @@
 /**
  * 本插件消费的 dsh 宿主接缝的最小结构类型.
  *
- * 插件对宿主包零运行时依赖, 所以这里用结构类型描述 Context, 事件载荷与两个服务视图,
+ * 插件对宿主包零运行时依赖, 所以这里用结构类型描述 Context, 事件载荷与服务视图,
  * 每个字段只取本插件真正读取的部分. 结构对应的宿主定义写在注释里, 升级 dsh 时按这些
  * 出处核对, 不一致会表现为判定失效 (fail-closed, 转人工) 而不是误放行.
+ *
+ * HTTP 形状故意不引用 `node:http`: 本包 `tsconfig.json` 的 `types` 为空.
  *
  * @module dsh-approve-prefix/host-types
  */
@@ -49,40 +51,6 @@ export interface PluginLogger {
   debug?(message: string): void
 }
 
-/** 命令执行结果, 对应 dsh-commands 的结果联合类型. */
-export interface CommandResultLike {
-  /** 结果类型. */
-  readonly kind: 'success' | 'error'
-  /** 直接展示给用户的文本. */
-  readonly text?: string
-}
-
-/** 命令调用视图, 只取本插件需要的字段. */
-export interface CommandInvocationLike {
-  /** 命令名之后的原始输入文本. */
-  readonly rawInput: string
-  /** 收到该命令的 agent, 用于定位当前会话. */
-  readonly agent?: unknown
-}
-
-/** 命令定义, 对应 dsh-commands 的注册项. */
-export interface CommandDefinitionLike {
-  /** 命令名, 不带斜杠. */
-  readonly name: string
-  /** 命令面板里的说明. */
-  readonly description: string
-  /** 自由输入提示. */
-  readonly input?: { readonly hint: string }
-  /** 执行体. */
-  readonly handler: (invocation: CommandInvocationLike) => CommandResultLike | Promise<CommandResultLike>
-}
-
-/** commands 服务中本插件用到的方法. */
-export interface CommandsServiceLike {
-  /** 注册一个命令, 返回卸载函数. */
-  register(definition: CommandDefinitionLike): unknown
-}
-
 /** settings scope 中本插件用到的方法 (Host 半边只读). */
 export interface SettingsScopeLike {
   /** 读取当前生效的段落值. */
@@ -93,6 +61,46 @@ export interface SettingsScopeLike {
 export interface SettingsServiceLike {
   /** 注册命名空间, 拿到 owner scope. */
   register(namespace: string, schema: unknown, options?: object): SettingsScopeLike
+}
+
+/**
+ * webServer 收到的请求面.
+ *
+ * IncomingMessage 结构上满足本接口; 本插件不读取 body 以外的 Node 特有字段.
+ */
+export interface HttpRequestLike {
+  readonly method?: string
+  readonly url?: string
+  readonly headers: unknown
+  [Symbol.asyncIterator]?: () => AsyncIterator<unknown>
+}
+
+/** webServer 交给 handler 的响应面. */
+export interface HttpResponseLike {
+  writeHead(status: number, headers?: Record<string, string>): unknown
+  end(chunk?: string): unknown
+}
+
+/** 一条 webServer 路由. */
+export interface WebServerRouteLike {
+  readonly kind: 'exact' | 'prefix'
+  readonly path: string
+  handler(req: HttpRequestLike, res: HttpResponseLike): void | Promise<void>
+}
+
+/** webServer 服务中本插件用到的方法. */
+export interface WebServerLike {
+  register(route: WebServerRouteLike): unknown
+}
+
+/**
+ * connection 服务中本插件用到的方法.
+ *
+ * `requestRejection` 走同一套 cookie 与 Host/Origin 栅栏; 返回 401 / 403 表示拒绝,
+ * undefined 表示过关.
+ */
+export interface ConnectionServiceLike {
+  requestRejection(request: { headers: unknown }): 401 | 403 | undefined
 }
 
 /** 本插件消费的最小 Context 形状. */
@@ -112,11 +120,14 @@ export interface PluginContext {
   inject(dependencies: readonly string[], callback: (context: InjectedContext) => void): unknown
   /** 把注册动作登记为 effect, 插件卸载时自动清理. */
   effect<T>(callback: () => T): T
+  /** 按名取可选服务, 未就绪时为 undefined. */
+  get(name: string): unknown
   logger: PluginLogger
 }
 
 /** inject 回调里可见的服务: 只有写进 dependencies 的服务才会就绪. */
 export interface InjectedContext extends PluginContext {
   readonly settings?: SettingsServiceLike
-  readonly commands?: CommandsServiceLike
+  readonly webServer?: WebServerLike
+  readonly connection?: ConnectionServiceLike
 }

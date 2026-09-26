@@ -12,16 +12,16 @@
     "loaderIds": ["dsh-approve-prefix"],
     "services": [],
     "tools": [],
-    "commands": [
-      "approve-prefix-add",
-      "approve-prefix-rm",
-      "approve-prefix-list",
-      "approve-prefix-clear"
-    ],
+    "commands": [],
     "skills": [],
     "skillProviders": [],
     "events": [],
     "settingsNamespaces": ["approve-prefix"],
-    "routes": []
+    "routes": [
+      {
+        "kind": "prefix",
+        "path": "/api/plugins/dsh-approve-prefix/sessions"
+      }
+    ]
   }
 }
