@@ -24,7 +24,7 @@
 import { installApprovalAnswerer } from './approval/answerer.js'
 import { installApprovedAssemblyPatch, installApprovedSchemaPatch } from './approval/approved-schema.js'
 import { PendingCommands } from './approval/pending-commands.js'
-import { DEFAULT_TOOLS, normalizeConfig, presentToolNames } from './config.js'
+import { DEFAULT_PREFIXES, DEFAULT_TOOLS, normalizeConfig, presentToolNames } from './config.js'
 import type { PluginContext } from './host-types.js'
 import { PersistentPrefixes } from './prefix/persistent.js'
 import { sessionKeyOf } from './prefix/session-key.js'
@@ -64,7 +64,7 @@ interface ConfigInput {
 }
 
 export const Config: z<ConfigInput, Config> = z.object({
-  prefixes: z.array(z.string()).default(['gh api']),
+  prefixes: z.array(z.string()).default([...DEFAULT_PREFIXES]),
   tools: z.array(z.string()).default([...DEFAULT_TOOLS]),
   allowedEscalationModes: z.array(z.string()).default(['danger-full-access']),
   extraDeniedCharacters: z.array(z.string()).default([]),

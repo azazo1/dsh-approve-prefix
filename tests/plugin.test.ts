@@ -30,6 +30,8 @@ const HUMAN_ALLOW: ApprovalOutcome = 'allowed-once'
 /** 测试用的两个会话. */
 const FIRST_SESSION = 'session-first'
 const SECOND_SESSION = 'session-second'
+/** 生产默认 prefixes 为空. 需要命中前缀的判定用例必须显式传入. */
+const MATCH_PREFIXES = { prefixes: ['gh api'] }
 
 /** 假的 settings 存储, 模拟在配置页面里编辑并跨进程保留的配置. */
 interface FakeSettingsStore {
@@ -280,21 +282,28 @@ function escalation(callId: string, mode = 'danger-full-access', sessionKey: str
 }
 
 describe('静态前缀判定', () => {
-  test('放行单条 gh api 的提权请求', async () => {
+  test('默认静态前缀为空, 不自动放行 gh api', async () => {
     const host = createHost()
+    await host.preExecute({ callId: 'call-1', command: 'gh api user' })
+    expect(await host.approve(escalation('call-1'))).toBe(HUMAN_REJECT)
+    expect(host.logs.some(line => line.includes('auto-approved'))).toBe(false)
+  })
+
+  test('放行单条 gh api 的提权请求', async () => {
+    const host = createHost(MATCH_PREFIXES)
     await host.preExecute({ callId: 'call-1', command: 'gh api user --jq .login' })
     expect(await host.approve(escalation('call-1'))).toBe(HUMAN_ALLOW)
     expect(host.logs.join('\n')).toContain('auto-approved a sandbox escalation to danger-full-access')
   })
 
   test('放行带环境变量前缀的单条 gh api 命令', async () => {
-    const host = createHost()
+    const host = createHost(MATCH_PREFIXES)
     await host.preExecute({ callId: 'call-1', command: 'ENVA=aaa gh api user' })
     expect(await host.approve(escalation('call-1'))).toBe(HUMAN_ALLOW)
   })
 
   test('带管道或链式的命令转人工', async () => {
-    const host = createHost()
+    const host = createHost(MATCH_PREFIXES)
     await host.preExecute({ callId: 'call-1', command: 'gh api user | jq .login' })
     await host.preExecute({ callId: 'call-2', command: 'gh api user; rm -rf /tmp/x' })
     await host.preExecute({ callId: 'call-3', command: 'gh api user && gh auth status' })
@@ -304,7 +313,7 @@ describe('静态前缀判定', () => {
   })
 
   test('前缀不匹配的命令转人工', async () => {
-    const host = createHost()
+    const host = createHost(MATCH_PREFIXES)
     await host.preExecute({ callId: 'call-1', command: 'gh auth status' })
     expect(await host.approve(escalation('call-1'))).toBe(HUMAN_REJECT)
   })
@@ -315,19 +324,19 @@ describe('静态前缀判定', () => {
   })
 
   test('白名单之外的提权档位转人工', async () => {
-    const host = createHost()
+    const host = createHost(MATCH_PREFIXES)
     await host.preExecute({ callId: 'call-1', command: 'gh api user' })
     expect(await host.approve(escalation('call-1', 'workspace-write'))).toBe(HUMAN_REJECT)
   })
 
   test('默认只应答提权请求', async () => {
-    const host = createHost()
+    const host = createHost(MATCH_PREFIXES)
     await host.preExecute({ callId: 'call-1', command: 'gh api user' })
     expect(await host.approve({ toolName: 'bash', callId: 'call-1', reason: 'a policy plugin asks' })).toBe(HUMAN_REJECT)
   })
 
   test('onlyEscalations 为 false 时也应答普通审批', async () => {
-    const host = createHost({ onlyEscalations: false })
+    const host = createHost({ ...MATCH_PREFIXES, onlyEscalations: false })
     await host.preExecute({ callId: 'call-1', command: 'gh api user' })
     expect(await host.approve({ toolName: 'bash', callId: 'call-1', reason: 'a policy plugin asks' })).toBe(HUMAN_ALLOW)
   })
@@ -336,19 +345,19 @@ describe('静态前缀判定', () => {
     const host = createHost({ prefixes: ['gh'] })
     await host.preExecute({ callId: 'call-1', command: 'gh auth status' })
     expect(await host.approve(escalation('call-1'))).toBe(HUMAN_ALLOW)
-    const strict = createHost({ extraDeniedCharacters: ['-'] })
+    const strict = createHost({ ...MATCH_PREFIXES, extraDeniedCharacters: ['-'] })
     await strict.preExecute({ callId: 'call-1', command: 'gh api user --jq .login' })
     expect(await strict.approve(escalation('call-1'))).toBe(HUMAN_REJECT)
   })
 
   test('未列入 tools 的工具不参与', async () => {
-    const host = createHost()
+    const host = createHost(MATCH_PREFIXES)
     await host.preExecute({ callId: 'call-1', command: 'gh api user' })
     expect(await host.approve({ ...escalation('call-1'), toolName: 'python' })).toBe(HUMAN_REJECT)
   })
 
   test('一次记录只消费一次', async () => {
-    const host = createHost()
+    const host = createHost(MATCH_PREFIXES)
     await host.preExecute({ callId: 'call-1', command: 'gh api user' })
     expect(await host.approve(escalation('call-1'))).toBe(HUMAN_ALLOW)
     expect(await host.approve(escalation('call-1'))).toBe(HUMAN_REJECT)
@@ -384,13 +393,13 @@ describe('模型自报 approved: true', () => {
   })
 
   test('前缀命中时即使写了 approved: true 也放行', async () => {
-    const host = createHost()
+    const host = createHost(MATCH_PREFIXES)
     await host.preExecute({ callId: 'call-1', command: 'gh api user', approved: true })
     expect(await host.approve(escalation('call-1'), 'cancelled')).toBe(HUMAN_ALLOW)
   })
 
   test('档位不在白名单时即使写了 approved: true 也转人工', async () => {
-    const host = createHost()
+    const host = createHost(MATCH_PREFIXES)
     await host.preExecute({ callId: 'call-1', command: 'gh api user', approved: true })
     expect(await host.approve(escalation('call-1', 'workspace-write'), 'cancelled')).toBe('cancelled')
   })
@@ -605,7 +614,10 @@ describe('系统提示词', () => {
     if (section === undefined || typeof section.text !== 'function') return
     const text = section.text({ agent: { session: { id: FIRST_SESSION } } })
     expect(text).toContain('- bash:')
+    expect(text).toContain('- none')
     expect(text).not.toContain('missing')
+    expect(text).not.toContain('gh api')
+    expect(text).not.toContain('/usr/bin/gh')
   })
 })
 

@@ -50,7 +50,9 @@ describe('renderAllowPrefixSection', () => {
     expect(text).toContain('rejected with no human dialog')
     expect(text).toContain('Omit it to keep the dialog')
     expect(text).toContain('one simple command')
-    expect(text).toContain('/usr/bin/gh matches gh')
+    expect(text).toContain('/usr/bin/foo matches foo')
+    expect(text).not.toContain('gh api')
+    expect(text).not.toContain('/usr/bin/gh')
     expect(text).not.toContain('parsed by local pwsh')
   })
 

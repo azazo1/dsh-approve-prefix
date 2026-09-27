@@ -7,7 +7,7 @@
  */
 
 /** 默认允许自动放行的命令前缀. */
-export const DEFAULT_PREFIXES: readonly string[] = ['gh api']
+export const DEFAULT_PREFIXES: readonly string[] = []
 
 /** 默认纳入记录与判定的工具名. */
 export const DEFAULT_TOOLS: readonly string[] = ['bash', 'pwsh']

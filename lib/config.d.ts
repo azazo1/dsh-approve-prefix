@@ -5,7 +5,7 @@
  *
  * @module dsh-approve-prefix/config
  */
-/** 默认允许自动放行的命令前缀. */
+/** 默认静态前缀为空: 没人显式配置时什么都不自动放行. */
 export declare const DEFAULT_PREFIXES: readonly string[];
 /** 默认纳入记录与判定的工具名. */
 export declare const DEFAULT_TOOLS: readonly string[];

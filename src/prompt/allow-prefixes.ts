@@ -142,7 +142,7 @@ export function renderAllowPrefixSection(input: AllowPrefixPromptInput): string 
     '',
     intro,
     '',
-    'Match: one simple command whose argv starts with a prefix listed for that tool below. A pipe, &&, ||, ;, redirect, background job, subshell, or command / parameter substitution does not match. A prefix is space-separated words; later arguments may follow. The first word matches by filename, so /usr/bin/gh matches gh. Leading NAME=value assignments and a bare env wrapper are ignored. env with options is not.',
+    'Match: one simple command whose argv starts with a prefix listed for that tool below. A pipe, &&, ||, ;, redirect, background job, subshell, or command / parameter substitution does not match. A prefix is space-separated words; later arguments may follow. The first word matches by filename, so /usr/bin/foo matches foo. Leading NAME=value assignments and a bare env wrapper are ignored. env with options is not.',
   ]
   const extra = input.extraDeniedCharacters.filter(character => character !== '').map(describeCharacter)
   if (extra.length > 0) lines.push(`The command text must also not contain ${extra.join(', ')}.`)
