@@ -49,7 +49,7 @@
   "packageManager": "pnpm@12.3.4",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
-    "build:host": "tsc -p tsconfig.json",
+    "build:host": "tsc -p tsconfig.json && node --input-type=module -e \"import { copyFileSync } from 'node:fs'; copyFileSync('src/prefix/pwsh-inspect.ps1', 'lib/prefix/pwsh-inspect.ps1')\"",
     "build:client": "tsc -p tsconfig.client.json",
     "build": "pnpm run build:host && pnpm run build:client",
     "test": "bun test tests",

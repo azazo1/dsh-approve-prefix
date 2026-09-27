@@ -491,10 +491,10 @@ describe('会话级临时前缀', () => {
 
   test('可以用非默认工具名写入临时前缀', async () => {
     const store: FakeSettingsStore = { persistentPrefixes: [] }
-    const host = createHost({ prefixes: [], tools: ['bash', 'pwsh'] }, store)
-    expect((await host.request('PUT', prefixesPath(FIRST_SESSION), { body: { entries: [{ tool: 'pwsh', prefix: 'gh api' }] } })).status).toBe(200)
-    await host.preExecute({ callId: 'call-1', command: 'gh api user', name: 'pwsh' })
-    expect(await host.approve({ ...escalation('call-1'), toolName: 'pwsh' })).toBe(HUMAN_ALLOW)
+    const host = createHost({ prefixes: [], tools: ['bash', 'custom'] }, store)
+    expect((await host.request('PUT', prefixesPath(FIRST_SESSION), { body: { entries: [{ tool: 'custom', prefix: 'gh api' }] } })).status).toBe(200)
+    await host.preExecute({ callId: 'call-1', command: 'gh api user', name: 'custom' })
+    expect(await host.approve({ ...escalation('call-1'), toolName: 'custom' })).toBe(HUMAN_ALLOW)
     await host.preExecute({ callId: 'call-2', command: 'gh api user' })
     expect(await host.approve(escalation('call-2'))).toBe(HUMAN_REJECT)
   })

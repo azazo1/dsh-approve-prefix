@@ -47,6 +47,8 @@ src/
 │   └── pending-commands.ts  callId 到命令原文的有界一次性记录表
 ├── prefix/
 │   ├── judge.ts             单命令判定与 argv 前缀匹配
+│   ├── pwsh-judge.ts        pwsh ParseInput 摘要的白名单
+│   ├── pwsh-inspect.ps1     只解析不执行, 打印 AST 摘要 JSON
 │   ├── session-key.ts       从 agent 视图取会话 id
 │   ├── entry.ts             前缀条目校验 (空, 运算符, 重复, 上限)
 │   ├── temporary.ts         会话级临时前缀表
@@ -80,7 +82,7 @@ client bundle 必须是自包含的普通脚本, 不能出现 `import`/`export`,
 
 ## 已知边界
 
-- 只覆盖 `bash`: `pwsh` 的分词与语法不同, 需要单独验证后加入 `tools`.
+- 默认只覆盖 `bash`. `pwsh` 走本机 `[Parser]::ParseInput` 的摘要白名单, 与 unbash 路径分开; 宿主没有 pwsh 时 fail-closed.
 - 命令原文依赖 `tools/pre-execute` 记录, 记录表有容量上限 (`pendingCapacity`), 长会话中极早的记录会被淘汰, 淘汰后转人工.
 - 不做命令语义分析: 只判断 "是不是命名单命令", 不判断副作用.
 - 审批卡片上的按钮无法被插件区分, 所以 "点某个按钮才记住前缀" 需要自己实现审批卡片的 client 应答器; 当前用会话 tab 与配置页代替.

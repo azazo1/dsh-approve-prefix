@@ -42,6 +42,8 @@ export interface ApprovalDecisionInput {
   readonly prefixes: readonly string[]
   /** 插件配置. */
   readonly config: PluginConfig
+  /** 审批请求的工具名, 用来选 bash / pwsh 判定器. */
+  readonly toolName: string
 }
 
 /** 未自动放行时的原因, 用来区分 "前缀未命中直接拒绝" 与 "仍转人工". */
@@ -77,7 +79,8 @@ export function decideApproval(input: ApprovalDecisionInput): ApprovalDecision {
   if (command === undefined) {
     return { autoApprove: false, skip: 'no-command', detail: 'no remembered command for this call' }
   }
-  const verdict = judgeSingleCommandPrefix(command, input.prefixes, config.extraDeniedCharacters)
+  const dialect = input.toolName === 'pwsh' || input.toolName === 'powershell' ? 'pwsh' : 'bash'
+  const verdict = judgeSingleCommandPrefix(command, input.prefixes, config.extraDeniedCharacters, dialect)
   if (verdict.allowed) return { autoApprove: true, detail: verdict.detail }
   return { autoApprove: false, skip: 'prefix', detail: verdict.detail }
 }
@@ -119,7 +122,13 @@ export function installApprovalAnswerer(ctx: PluginContext, deps: ApprovalAnswer
       ...(deps.persistent()?.forTool(request.toolName) ?? []),
       ...deps.temporary.forTool(sessionKeyOf(request.agent), request.toolName),
     ]
-    const decision = decideApproval({ escalationMode, command, prefixes, config })
+    const decision = decideApproval({
+      escalationMode,
+      command,
+      prefixes,
+      config,
+      toolName: request.toolName,
+    })
 
     if (!decision.autoApprove) {
       const subject = command === undefined ? '(no remembered command)' : shortenCommand(command)

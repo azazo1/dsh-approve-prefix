@@ -1,9 +1,10 @@
 /**
  * 单命令前缀判定: 判断一条 shell 命令是否属于 "单条简单命令, 且 argv 前缀命中白名单".
  *
- * 判定用 unbash 解析成 AST, 再按白名单检查: 必须恰好一条简单命令, 不能有管道,
- * 链式, 子 shell, 后台, 重定向, 以及会改写或执行其它命令的词展开. 通过后再去掉
- * 命令行前缀形式的环境变量赋值 (以及 `env` 包装), 做 argv 前缀匹配.
+ * bash 用 unbash 解析; pwsh 调本机 pwsh 做 ParseInput. 再按白名单检查: 必须恰好
+ * 一条简单命令, 不能有管道, 链式, 子 shell, 后台, 重定向, 以及会改写或执行其它
+ * 命令的词展开. bash 通过后再去掉命令行前缀形式的环境变量赋值 (以及 `env` 包装),
+ * 做 argv 前缀匹配.
  *
  * 本模块只做命令解析, 不涉及任何策略或状态.
  *
@@ -11,6 +12,11 @@
  */
 
 import { parse, type Word, type WordPart } from 'unbash'
+
+import { inspectPwshCommand } from './pwsh-judge.js'
+
+/** 命令所属的 shell 方言. 未列入的工具名按 bash 处理. */
+export type CommandDialect = 'bash' | 'pwsh'
 
 /** 命令行前缀形式的赋值, 例如 `ENVA=aaa`. */
 const ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=[\s\S]*$/
@@ -76,8 +82,9 @@ function fail(detail: string): CommandInspection {
 
 /** 取命令词的文件名部分, 让 `/usr/bin/gh` 与 `gh` 等价. */
 function commandWord(token: string): string {
-  const slash = token.lastIndexOf('/')
-  return slash === -1 ? token : token.slice(slash + 1)
+  const parts = token.split(/[/\\]/)
+  const base = parts[parts.length - 1] ?? token
+  return base.replace(/\.exe$/i, '')
 }
 
 /**
@@ -138,9 +145,14 @@ function stripEnvironmentPrefixes(tokens: readonly string[]): string[] | undefin
  * 检查一条命令是否是单条简单命令, 通过时给出归约后的命令 token.
  * @param command - 模型给出的完整命令文本.
  * @param extraDeniedCharacters - 额外拒绝的单字符, 对命令原文做整串扫描.
+ * @param dialect - bash 走 unbash, pwsh 走本机 ParseInput.
  * @returns 检查结果.
  */
-export function inspectSingleCommand(command: string, extraDeniedCharacters: readonly string[] = []): CommandInspection {
+export function inspectSingleCommand(
+  command: string,
+  extraDeniedCharacters: readonly string[] = [],
+  dialect: CommandDialect = 'bash',
+): CommandInspection {
   const text = command.trim()
   if (text === '') return fail('the command is empty')
   for (const character of extraDeniedCharacters) {
@@ -149,6 +161,7 @@ export function inspectSingleCommand(command: string, extraDeniedCharacters: rea
       return fail(`the command contains ${describeCharacter(character)}, so it is not a single command`)
     }
   }
+  if (dialect === 'pwsh') return inspectPwshCommand(text)
 
   let script
   try {
@@ -217,14 +230,16 @@ export function tokenizeCommand(text: string): string[] | undefined {
  * @param command - 模型给出的完整命令文本.
  * @param prefixes - 允许的前缀表, 每项是空格分隔的命令词序列, 例如 `gh api`.
  * @param extraDeniedCharacters - 额外拒绝的单字符, 对命令原文做整串扫描.
+ * @param dialect - bash 走 unbash, pwsh 走本机 ParseInput.
  * @returns 判定结果.
  */
 export function judgeSingleCommandPrefix(
   command: string,
   prefixes: readonly string[],
   extraDeniedCharacters: readonly string[] = [],
+  dialect: CommandDialect = 'bash',
 ): PrefixVerdict {
-  const inspection = inspectSingleCommand(command, extraDeniedCharacters)
+  const inspection = inspectSingleCommand(command, extraDeniedCharacters, dialect)
   if (!inspection.ok) return { allowed: false, detail: inspection.detail }
   for (const prefix of prefixes) {
     const words = prefix.trim().split(/\s+/).filter(word => word !== '')
