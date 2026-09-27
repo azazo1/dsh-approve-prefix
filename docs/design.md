@@ -86,7 +86,7 @@ client bundle 必须是自包含的普通脚本, 不能出现 `import`/`export`,
 
 ## 已知边界
 
-- 默认只覆盖 `bash`. `pwsh` 走本机 `[Parser]::ParseInput` 的摘要白名单, 与 unbash 路径分开; 宿主没有 pwsh 时 fail-closed.
+- 默认覆盖 `bash` 和 `pwsh`. 注册表里没有的名字不补 `approved`, 也不写进系统提示词. `pwsh` / `powershell` 走本机 `[Parser]::ParseInput` 的摘要白名单, 与 unbash 路径分开; 宿主没有 pwsh 时 fail-closed.
 - 命令原文依赖 `tools/pre-execute` 记录, 记录表有容量上限 (`pendingCapacity`), 长会话中极早的记录会被淘汰, 淘汰后转人工.
 - 不做命令语义分析: 只判断 "是不是命名单命令", 不判断副作用.
 - 审批卡片上的按钮无法被插件区分, 所以 "点某个按钮才记住前缀" 需要自己实现审批卡片的 client 应答器; 当前用会话 tab 与配置页代替.

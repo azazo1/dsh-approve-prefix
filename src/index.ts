@@ -23,7 +23,7 @@
 import { installApprovalAnswerer } from './approval/answerer.js'
 import { installApprovedSchemaPatch } from './approval/approved-schema.js'
 import { PendingCommands } from './approval/pending-commands.js'
-import { normalizeConfig } from './config.js'
+import { DEFAULT_TOOLS, normalizeConfig, presentToolNames } from './config.js'
 import type { PluginContext } from './host-types.js'
 import { PersistentPrefixes } from './prefix/persistent.js'
 import { sessionKeyOf } from './prefix/session-key.js'
@@ -64,7 +64,7 @@ interface ConfigInput {
 
 export const Config: z<ConfigInput, Config> = z.object({
   prefixes: z.array(z.string()).default(['gh api']),
-  tools: z.array(z.string()).default(['bash']),
+  tools: z.array(z.string()).default([...DEFAULT_TOOLS]),
   allowedEscalationModes: z.array(z.string()).default(['danger-full-access']),
   extraDeniedCharacters: z.array(z.string()).default([]),
   onlyEscalations: z.boolean().default(true),
@@ -95,6 +95,18 @@ function readCommand(argumentsValue: unknown): string | undefined {
 function readSelfApproved(argumentsValue: unknown): boolean {
   if (typeof argumentsValue !== 'object' || argumentsValue === null) return false
   return (argumentsValue as Record<string, unknown>)['approved'] === true
+}
+
+/**
+ * 从 `ctx.get('tools')` 取出按名查找.
+ * @param value - 可能还没就绪的 tools 服务.
+ * @returns 查得到工具时的查找函数, 否则 undefined.
+ */
+function toolLookup(value: unknown): ((name: string) => unknown) | undefined {
+  if (typeof value !== 'object' || value === null || !('get' in value)) return undefined
+  const get = (value as { get?: unknown }).get
+  if (typeof get !== 'function') return undefined
+  return (name: string) => get.call(value, name)
 }
 
 /**
@@ -147,7 +159,7 @@ export function apply(ctx: PluginContext, configInput: Config): void {
       order: ALLOW_PREFIX_SECTION_ORDER,
       interpolate: false,
       text: (context) => renderAllowPrefixSection({
-        tools: config.tools,
+        tools: presentToolNames(config.tools, toolLookup(promptCtx.get('tools'))),
         staticPrefixes: config.prefixes,
         persistent: persistent.list(),
         temporary: temporary.list(sessionKeyOf(context.agent)),
@@ -172,7 +184,7 @@ export function apply(ctx: PluginContext, configInput: Config): void {
     }, {
       list: (sessionKey) => temporary.list(sessionKey),
       replace: (sessionKey, entries) => temporary.replace(sessionKey, entries),
-      defaultTool: config.tools[0] ?? 'bash',
+      defaultTool: () => presentToolNames(config.tools, toolLookup(webCtx.get('tools')))[0] ?? 'bash',
       limit: config.temporaryPrefixLimit,
     })
   })

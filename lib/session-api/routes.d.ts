@@ -19,7 +19,8 @@ export interface SessionPrefixesPayload {
 export interface SessionPrefixRouteHost {
     list(sessionKey: string): readonly PrefixEntry[];
     replace(sessionKey: string, entries: readonly PrefixEntry[]): PrefixWriteError | undefined;
-    readonly defaultTool: string;
+    /** 新增一行时的工具名. 可以是字符串, 或每次请求现算 (注册表里谁在, 就用谁). */
+    readonly defaultTool: string | (() => string);
     readonly limit: number;
 }
 /** 挂路由时需要的 Context 面. */

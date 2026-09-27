@@ -323,10 +323,10 @@ describe('静态前缀判定', () => {
     expect(await strict.approve(escalation('call-1'))).toBe(HUMAN_REJECT)
   })
 
-  test('非 bash 工具不参与', async () => {
+  test('未列入 tools 的工具不参与', async () => {
     const host = createHost()
     await host.preExecute({ callId: 'call-1', command: 'gh api user' })
-    expect(await host.approve({ ...escalation('call-1'), toolName: 'pwsh' })).toBe(HUMAN_REJECT)
+    expect(await host.approve({ ...escalation('call-1'), toolName: 'python' })).toBe(HUMAN_REJECT)
   })
 
   test('一次记录只消费一次', async () => {
@@ -391,8 +391,14 @@ describe('模型自报 approved: true', () => {
     expect((parameters as { required?: string[] }).required).not.toContain('approved')
   })
 
-  test('默认不改 pwsh, 除非它在 tools 配置里', () => {
+  test('默认也给已注册的 pwsh 补 approved', () => {
     const host = createHost()
+    const parameters = host.toolParameters('pwsh') as { properties: { approved: { type: string } } }
+    expect(parameters.properties.approved.type).toBe('boolean')
+  })
+
+  test('显式只配 bash 时不改 pwsh', () => {
+    const host = createHost({ tools: ['bash'] })
     const parameters = host.toolParameters('pwsh') as { properties: { approved?: unknown } }
     expect(parameters.properties.approved).toBeUndefined()
   })
@@ -550,6 +556,16 @@ describe('系统提示词', () => {
     expect(render(section, FIRST_SESSION)).not.toContain('git status')
     expect(render(section, FIRST_SESSION)).toContain('pwsh:')
     expect(render(section, FIRST_SESSION)).toContain('parsed by local pwsh')
+  })
+
+  test('提示词不列出注册表里没有的工具', () => {
+    const host = createHost({ tools: ['bash', 'missing'] })
+    const section = host.sections[0]
+    expect(section).toBeDefined()
+    if (section === undefined || typeof section.text !== 'function') return
+    const text = section.text({ agent: { session: { id: FIRST_SESSION } } })
+    expect(text).toContain('- bash:')
+    expect(text).not.toContain('missing')
   })
 })
 

@@ -31,7 +31,8 @@ export interface SessionPrefixesPayload {
 export interface SessionPrefixRouteHost {
   list(sessionKey: string): readonly PrefixEntry[]
   replace(sessionKey: string, entries: readonly PrefixEntry[]): PrefixWriteError | undefined
-  readonly defaultTool: string
+  /** 新增一行时的工具名. 可以是字符串, 或每次请求现算 (注册表里谁在, 就用谁). */
+  readonly defaultTool: string | (() => string)
   readonly limit: number
 }
 
@@ -136,7 +137,7 @@ async function handlePut(
 function payloadOf(host: SessionPrefixRouteHost, sessionId: string): SessionPrefixesPayload {
   return {
     entries: host.list(sessionId),
-    defaultTool: host.defaultTool,
+    defaultTool: typeof host.defaultTool === 'function' ? host.defaultTool() : host.defaultTool,
     limit: host.limit,
   }
 }

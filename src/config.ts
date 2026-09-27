@@ -10,7 +10,7 @@
 export const DEFAULT_PREFIXES: readonly string[] = ['gh api']
 
 /** 默认纳入记录与判定的工具名. */
-export const DEFAULT_TOOLS: readonly string[] = ['bash']
+export const DEFAULT_TOOLS: readonly string[] = ['bash', 'pwsh']
 
 /** 默认允许自动放行的提权目标档位. */
 export const DEFAULT_ESCALATION_MODES: readonly string[] = ['danger-full-access']
@@ -138,4 +138,22 @@ export function normalizeConfig(raw: unknown): PluginConfig {
     debug: readBoolean(raw, 'debug', false),
     pendingCapacity: readInteger(raw, 'pendingCapacity', DEFAULT_PENDING_CAPACITY, 1, 4096),
   }
+}
+
+/**
+ * 配置里的工具名里, 挑出注册表里确实存在的那些.
+ *
+ * 查不到注册表时原样返回, 避免提示词在工具服务还没就绪时变成空表.
+ * 一个都没注册时也退回原表, 让模型仍能看到匹配规则.
+ * @param configured - config.tools.
+ * @param lookup - 按名取工具; 没有注册表时省略.
+ * @returns 要展示或当作默认工具的名字, 保持配置顺序.
+ */
+export function presentToolNames(
+  configured: readonly string[],
+  lookup?: (name: string) => unknown,
+): readonly string[] {
+  if (lookup === undefined) return configured
+  const present = configured.filter(name => lookup(name) !== undefined)
+  return present.length > 0 ? present : configured
 }

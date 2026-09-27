@@ -42,3 +42,13 @@ export interface PluginConfig {
  * @returns 补齐默认值后的配置.
  */
 export declare function normalizeConfig(raw: unknown): PluginConfig;
+/**
+ * 配置里的工具名里, 挑出注册表里确实存在的那些.
+ *
+ * 查不到注册表时原样返回, 避免提示词在工具服务还没就绪时变成空表.
+ * 一个都没注册时也退回原表, 让模型仍能看到匹配规则.
+ * @param configured - config.tools.
+ * @param lookup - 按名取工具; 没有注册表时省略.
+ * @returns 要展示或当作默认工具的名字, 保持配置顺序.
+ */
+export declare function presentToolNames(configured: readonly string[], lookup?: (name: string) => unknown): readonly string[];
