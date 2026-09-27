@@ -41,7 +41,6 @@ export interface Config {
     nightBlockedTools: string[];
     nightExemptTools: string[];
     nightCommand: boolean;
-    nightContext: string;
     persistentPrefixes: Volatile<PersistentPrefixEntry[]>;
 }
 interface ConfigInput {
@@ -56,7 +55,6 @@ interface ConfigInput {
     nightBlockedTools?: string[];
     nightExemptTools?: string[];
     nightCommand?: boolean;
-    nightContext?: string;
     persistentPrefixes?: PersistentPrefixEntry[];
 }
 export declare const Config: z<ConfigInput, Config>;

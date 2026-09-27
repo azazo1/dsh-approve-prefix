@@ -26,17 +26,6 @@ export const DEFAULT_PENDING_CAPACITY = 128
 /** 默认的会话级临时前缀条数上限. */
 export const DEFAULT_TEMPORARY_PREFIX_LIMIT = 32
 
-/**
- * 默认在打开 night 时交给 agent 的上下文.
- *
- * 这段是给 "刚刚被打开" 那一刻用的, 说明用户已经离开, 以及宿主接下来会怎么拦;
- * 持续生效的完整规则由系统提示词段负责.
- */
-export const DEFAULT_NIGHT_CONTEXT
-  = 'The user just turned on night mode for this session and has left. Decide everything yourself, '
-    + 'state your assumptions, and do not wait for an answer. Interactive tools are rejected while night mode is on, '
-    + 'and only a sandbox escalation matching an allow prefix is approved without asking.'
-
 /** 校验后的插件配置. */
 export interface PluginConfig {
   /** 配置文件里的静态前缀表, 每项为空格分隔的命令词序列. */
@@ -61,8 +50,6 @@ export interface PluginConfig {
   readonly nightExemptTools: readonly string[]
   /** 是否注册 `/night` 斜杠命令, 让命令行也能切换. */
   readonly nightCommand: boolean
-  /** 打开 night 时交给 agent 的上下文文本; 空串表示只写状态, 不额外注入. */
-  readonly nightContext: string
 }
 
 /** 已被识别的配置键, 其余键视为配置错误. */
@@ -79,7 +66,6 @@ const KNOWN_KEYS: readonly string[] = [
   'nightBlockedTools',
   'nightExemptTools',
   'nightCommand',
-  'nightContext',
 ]
 
 /** 判断一个值是否是普通对象. */
@@ -165,16 +151,7 @@ export function normalizeConfig(raw: unknown): PluginConfig {
     nightBlockedTools: readStringArray(raw, 'nightBlockedTools', DEFAULT_NIGHT_BLOCKED_TOOLS),
     nightExemptTools: readStringArray(raw, 'nightExemptTools', DEFAULT_NIGHT_EXEMPT_TOOLS),
     nightCommand: readBoolean(raw, 'nightCommand', true),
-    nightContext: readText(raw, 'nightContext', DEFAULT_NIGHT_CONTEXT),
   }
-}
-
-/** 读取一个可空的字符串字段. 与数组字段不同, 空串是合法取值, 表示 "不注入". */
-function readText(raw: Record<string, unknown>, key: string, fallback: string): string {
-  const value = raw[key]
-  if (value === undefined) return fallback
-  if (typeof value !== 'string') throw new Error(`dsh-approve-prefix: "${key}" must be a string`)
-  return value
 }
 
 /**

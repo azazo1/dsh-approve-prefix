@@ -90,7 +90,7 @@ TUI / 无 GUI / headless 没有这条管理面, 也就改不了临时表与开�
 
 开关与临时前缀一样只存进程内存, 按 session id 分组, 不写 settings 也不写会话日志. dsh 重启后开关全部归零, 系统提示词里那段夜里规则随之消失, agent 因此能判断 night 已经结束; 关闭后审批回到人工卡片.
 
-打开时另外给这个 agent 一条上下文 (可用 `nightContext` 换文案或置空), 让它在本轮就知道你不在; 持续生效的规则由系统提示词段负责:
+开关本身不产生任何模型可见的消息: `/night` 只写状态, 不往对话里补消息, 也不会唤醒 agent. 打开之后, agent 下一次请求会从系统提示词段里读到这些规则:
 
 - 遇到的每个待定问题自己定, 把假设写进回复里继续干.
 - 实在不能替你定的, 在回复里说明并结束那部分工作, 不要停住等.
@@ -102,7 +102,7 @@ TUI / 无 GUI / headless 没有这条管理面, 也就改不了临时表与开�
 - 它走的是用户提问通道, 一并拦掉会让 agent 无法退出计划模式; 你要离开前如果没有先退出计划模式, 它就成了死结.
 - dsh-reject-message 挂在计划审查卡上的拒绝入口也依赖这张卡, 拦掉它那个入口就永远见不到.
 
-名单与提示词文案都能配, 见下面的 `nightBlockedTools` / `nightExemptTools` / `nightContext`. 拦截是确定性的: 命中就 `{ kind: 'deny' }`, 不依赖模型是否读懂了提示词.
+名单能配, 见下面的 `nightBlockedTools` / `nightExemptTools`. 拦截是确定性的: 命中就 `{ kind: 'deny' }`, 不依赖模型是否读懂了提示词.
 
 与 dsh-reject-message 的配合: 插件在 `tools/pre-execute` 直接拒绝, 那次调用不会有审批请求, 所以拒绝窗口不会出现, 也没有描述可填. 这是 night 的定义 (没有人可填), 不是冲突; 关掉 night 后提权卡片与拒绝窗口照旧.
 
@@ -167,7 +167,6 @@ web 与 desktop 两个 profile 跑的是同一套 Web 应用, 桌面端只是多
 | `nightBlockedTools` | `['ask_user_question']` | night 期间直接拒绝的工具名; 只有形状像工具名的条目参与判定 |
 | `nightExemptTools` | `['exit_plan_mode']` | 即使出现在被拦名单里也放行的例外 |
 | `nightCommand` | `true` | 是否注册 `/night` 命令, 让输入框也能切换 |
-| `nightContext` | 一段说明 | 打开 night 时交给 agent 的上下文文本; 空串表示不额外注入 |
 | `debug` | `false` | 输出每次转人工的判定细节 |
 | `pendingCapacity` | `128` | 命令记录表容量, 超限淘汰最旧一条 |
 

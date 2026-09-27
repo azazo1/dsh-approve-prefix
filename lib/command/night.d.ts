@@ -7,8 +7,8 @@
  * 裸调用取反, 也可以写成 `/night on` / `/night off`. 命令走 dsh 的命令生命周期,
  * `command/run` 与 `command/done` 会留下记录, 便于事后核查谁在什么时候开了 night.
  *
- * 打开时另外给这个 agent 一条上下文, 让它在本轮里就知道用户已经离开;
- * 系统提示词段负责后续每一轮的持续生效.
+ * 开关本身不产生任何模型可见的消息: 打开后由系统提示词段告诉 agent 现在处于 night,
+ * agent 下一次请求自然就会读到, 不需要在切换的那一刻去打扰它.
  *
  * @module dsh-approve-prefix/command/night
  */
@@ -20,8 +20,6 @@ export declare const NIGHT_COMMAND_NAME = "night";
 export interface NightCommandDeps {
     /** 会话级开关表. */
     readonly states: NightStates;
-    /** 打开时交给 agent 的上下文文本. 为空串则不注入. */
-    readonly contextText: string;
 }
 /**
  * 注册 `/night` 命令.

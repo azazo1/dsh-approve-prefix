@@ -7,8 +7,8 @@
  * 裸调用取反, 也可以写成 `/night on` / `/night off`. 命令走 dsh 的命令生命周期,
  * `command/run` 与 `command/done` 会留下记录, 便于事后核查谁在什么时候开了 night.
  *
- * 打开时另外给这个 agent 一条上下文, 让它在本轮里就知道用户已经离开;
- * 系统提示词段负责后续每一轮的持续生效.
+ * 开关本身不产生任何模型可见的消息: 打开后由系统提示词段告诉 agent 现在处于 night,
+ * agent 下一次请求自然就会读到, 不需要在切换的那一刻去打扰它.
  *
  * @module dsh-approve-prefix/command/night
  */
@@ -24,53 +24,11 @@ export const NIGHT_COMMAND_NAME = 'night'
 export interface NightCommandDeps {
   /** 会话级开关表. */
   readonly states: NightStates
-  /** 打开时交给 agent 的上下文文本. 为空串则不注入. */
-  readonly contextText: string
 }
 
 /** 写一条命令结果. */
 function result(kind: 'success' | 'error', text: string): CommandResultLike {
   return kind === 'success' ? { kind: 'success', text } : { kind: 'error', text }
-}
-
-/**
- * 铸一个 RFC 9562 v4 UUID, 用作消息 id.
- *
- * 用 `crypto.getRandomValues` 而不是 `crypto.randomUUID`: 后者是 secure-context 才有的
- * Web API, 前者在各处都在.
- * @returns UUID 字符串.
- */
-function mintMessageId(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16))
-  const hex = Array.from(bytes, (byte: number, index: number) => {
-    const pinned = index === 6 ? (byte & 0x0f) | 0x40 : index === 8 ? (byte & 0x3f) | 0x80 : byte
-    return pinned.toString(16).padStart(2, '0')
-  }).join('')
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
-}
-
-/**
- * 把 night 已打开这件事交回 agent 上下文.
- *
- * 用 `agent.followup` 而不是 `inject`: 开关是用户刚做的动作, 值一条普通的后续输入,
- * 让它成为一个待处理的提醒, 而不是悄悄塞进下一次请求的上下文里.
- * @param agent - 命令调用携带的 agent.
- * @param text - 交给模型的上下文文本.
- */
-function notifyAgent(agent: unknown, text: string): void {
-  if (typeof agent !== 'object' || agent === null) return
-  const followup = (agent as Record<string, unknown>)['followup']
-  if (typeof followup !== 'function') return
-  try {
-    followup.call(agent, {
-      id: mintMessageId(),
-      role: 'user',
-      content: [{ type: 'text', text }],
-      source: { kind: 'dsh-approve-prefix' },
-    })
-  } catch {
-    // 上下文注入失败不影响开关本身: 状态已写入, 系统提示词段照样会出现.
-  }
 }
 
 /**
@@ -99,48 +57,23 @@ export function installNightCommand(ctx: PluginContext, deps: NightCommandDeps):
         return result('error', 'night mode needs a live session; this invocation carries no session identity')
       }
 
-      if (argument === '') {
-        const on = deps.states.toggle(sessionKey)
-        if (on === undefined) {
-          return result('error', 'night mode needs a live session; this invocation carries no session identity')
-        }
-        return reportSwitch(ctx, deps, sessionKey, on, invocation.agent)
+      /* 裸调用取反得到布尔值, on / off 得到写入结果, 两种都归到同一个状态词上. */
+      const outcome = argument === '' ? deps.states.toggle(sessionKey) : deps.states.set(sessionKey, argument === 'on')
+      if (outcome === undefined) {
+        return result('error', 'night mode needs a live session; this invocation carries no session identity')
       }
-      const target = argument === 'on'
-      const changed = deps.states.set(sessionKey, target)
-      if (changed === 'unchanged') {
-        return result('success', target
+      if (outcome === 'unchanged') {
+        return result('success', argument === 'on'
           ? 'Night mode is already on for this session.'
           : 'Night mode is already off for this session.')
       }
-      return reportSwitch(ctx, deps, sessionKey, target, invocation.agent)
+      const on = outcome === 'on' || outcome === true
+      ctx.logger.info(`dsh-approve-prefix: night mode ${on ? 'on' : 'off'} for session ${sessionKey}`)
+      return result('success', on
+        ? 'Night mode on: interactive tools are rejected and only prefix-matched escalations are approved.'
+        : 'Night mode off: approvals go back to the human card.')
     },
   }
   register.call(commands, definition)
   return true
-}
-
-/**
- * 写入之后的统一回执: 打开时再给 agent 一条上下文.
- * @param ctx - 插件 Context, 只为写日志.
- * @param deps - 命令依赖.
- * @param sessionKey - 会话 id.
- * @param on - 写入后的状态.
- * @param agent - 命令调用携带的 agent.
- * @returns 命令结果.
- */
-function reportSwitch(
-  ctx: PluginContext,
-  deps: NightCommandDeps,
-  sessionKey: string,
-  on: boolean,
-  agent: unknown,
-): CommandResultLike {
-  if (on) {
-    if (deps.contextText !== '') notifyAgent(agent, deps.contextText)
-    ctx.logger.info(`dsh-approve-prefix: night mode on for session ${sessionKey}`)
-    return result('success', 'Night mode on: interactive tools are rejected and only prefix-matched escalations are approved.')
-  }
-  ctx.logger.info(`dsh-approve-prefix: night mode off for session ${sessionKey}`)
-  return result('success', 'Night mode off: approvals go back to the human card.')
 }

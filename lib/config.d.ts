@@ -17,13 +17,6 @@ export declare const SANDBOX_MODES: readonly string[];
 export declare const DEFAULT_PENDING_CAPACITY = 128;
 /** 默认的会话级临时前缀条数上限. */
 export declare const DEFAULT_TEMPORARY_PREFIX_LIMIT = 32;
-/**
- * 默认在打开 night 时交给 agent 的上下文.
- *
- * 这段是给 "刚刚被打开" 那一刻用的, 说明用户已经离开, 以及宿主接下来会怎么拦;
- * 持续生效的完整规则由系统提示词段负责.
- */
-export declare const DEFAULT_NIGHT_CONTEXT: string;
 /** 校验后的插件配置. */
 export interface PluginConfig {
     /** 配置文件里的静态前缀表, 每项为空格分隔的命令词序列. */
@@ -48,8 +41,6 @@ export interface PluginConfig {
     readonly nightExemptTools: readonly string[];
     /** 是否注册 `/night` 斜杠命令, 让命令行也能切换. */
     readonly nightCommand: boolean;
-    /** 打开 night 时交给 agent 的上下文文本; 空串表示只写状态, 不额外注入. */
-    readonly nightContext: string;
 }
 /**
  * 校验并补齐配置.

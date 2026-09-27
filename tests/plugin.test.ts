@@ -91,10 +91,12 @@ interface FakeHost {
   command(name: string): CommandDefinitionLike | undefined
   /** 走一次斜杠命令. */
   runCommand(name: string, rawInput: string, sessionKey?: string): CommandResultLike | undefined
-  /** 某个 agent 收到的 followup 上下文. */
+  /**
+   * 某个 agent 收到的 followup 上下文.
+   *
+   * 开关不应该往这里写任何东西, 所以它总是空的; 留着是为了在测试里断言这一点.
+   */
   followups: string[]
-  /** 这些 followup 消息的 id, 用来确认确实是带身份的标准 user 消息. */
-  messageIds: string[]
 }
 
 interface CreateHostOptions {
@@ -121,7 +123,6 @@ function createHost(
   const logs: string[] = []
   const prepended: boolean[] = []
   const followups: string[] = []
-  const messageIds: string[] = []
   const commands = new Map<string, CommandDefinitionLike>()
   let rejection: 401 | 403 | undefined
   let connectionPresent = options.connection !== false
@@ -220,7 +221,6 @@ function createHost(
     logs,
     sections,
     followups,
-    messageIds,
     toolParameters(name) {
       return toolRegistry.get(name)?.parameters
     },
@@ -230,7 +230,7 @@ function createHost(
     runCommand(name, rawInput, sessionKey = FIRST_SESSION) {
       const definition = commands.get(name)
       if (definition === undefined) return undefined
-      return definition.handler({ rawInput, agent: agentOf(sessionKey, followups, messageIds) })
+      return definition.handler({ rawInput, agent: agentOf(sessionKey, followups) })
     },
     replaceTool(name, parameters) {
       toolRegistry.set(name, { parameters })
@@ -252,7 +252,7 @@ function createHost(
         name: execution.name ?? 'bash',
         callId: execution.callId,
         arguments: argumentsValue,
-        agent: agentOf(execution.sessionKey ?? FIRST_SESSION, followups, messageIds),
+        agent: agentOf(execution.sessionKey ?? FIRST_SESSION, followups),
       }
       /* 与 cordis 的 waterfall 一致: 先注册的监听器先跑, 不调用 next() 就结束整条链. */
       let index = 0
@@ -335,17 +335,16 @@ function nightPayloadOf(result: HttpResult): NightPayload {
 /**
  * 造一个假 agent 视图.
  *
- * 带上 `followup`, 这样 `/night` 打开时的上下文注入也能被观察到; 真实宿主里它是 agent 上的
- * 一个方法, 入参是标准 user 消息.
+ * 带上 `followup`: 真实宿主里它是 agent 上的一个方法, 用来给 agent 塞一条待处理的输入.
+ * 插件不应该在切换开关时调它, 所以测试要能观察到 "这里始终是空的".
  * @param sessionKey - 会话 id.
  * @param followups - 收到上下文文本时追加到这里.
  * @returns agent 视图.
  */
-function agentOf(sessionKey: string, followups: string[] = [], messageIds: string[] = []): unknown {
+function agentOf(sessionKey: string, followups: string[] = []): unknown {
   return {
     session: { id: sessionKey },
-    followup(message: { id: string, content: readonly { type: string, text?: string }[] }): void {
-      messageIds.push(message.id)
+    followup(message: { content: readonly { type: string, text?: string }[] }): void {
       followups.push(message.content.map(block => block.text ?? '').join(''))
     },
   }
@@ -787,11 +786,7 @@ describe('/night 命令', () => {
     const host = createHost()
     expect(host.command('night')).toBeDefined()
     expect(host.runCommand('night', '')).toEqual({ kind: 'success', text: 'Night mode on: interactive tools are rejected and only prefix-matched escalations are approved.' })
-    expect(host.followups).toHaveLength(1)
-    expect(host.followups[0]).toContain('night mode')
-    expect(host.messageIds[0]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     expect(host.runCommand('night', '')?.kind).toBe('success')
-    expect(host.followups).toHaveLength(1)
     expect(host.runCommand('night', 'on')?.kind).toBe('success')
     expect(host.runCommand('night', 'off')?.kind).toBe('success')
     expect(host.runCommand('night', '  ' )?.kind).toBe('success')
@@ -824,9 +819,10 @@ describe('/night 命令', () => {
     expect(createHost({ nightCommand: false }).command('night')).toBeUndefined()
   })
 
-  test('nightContext 为空时不注入上下文', () => {
-    const host = createHost({ nightContext: '' })
+  test('切换开关本身不产生任何模型可见的消息', () => {
+    const host = createHost()
     host.runCommand('night', 'on')
+    host.runCommand('night', 'off')
     expect(host.followups).toEqual([])
   })
 })

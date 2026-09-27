@@ -32,7 +32,6 @@ import { installInteractiveToolGuard } from './approval/block-interactive.js'
 import { PendingCommands } from './approval/pending-commands.js'
 import { installNightCommand } from './command/night.js'
 import {
-  DEFAULT_NIGHT_CONTEXT,
   DEFAULT_PREFIXES,
   DEFAULT_TOOLS,
   normalizeConfig,
@@ -71,7 +70,6 @@ export interface Config {
   nightBlockedTools: string[]
   nightExemptTools: string[]
   nightCommand: boolean
-  nightContext: string
   persistentPrefixes: Volatile<PersistentPrefixEntry[]>
 }
 
@@ -87,7 +85,6 @@ interface ConfigInput {
   nightBlockedTools?: string[]
   nightExemptTools?: string[]
   nightCommand?: boolean
-  nightContext?: string
   persistentPrefixes?: PersistentPrefixEntry[]
 }
 
@@ -103,7 +100,6 @@ export const Config: z<ConfigInput, Config> = z.object({
   nightBlockedTools: z.array(z.string()).default([...DEFAULT_NIGHT_BLOCKED_TOOLS]),
   nightExemptTools: z.array(z.string()).default([...DEFAULT_NIGHT_EXEMPT_TOOLS]),
   nightCommand: z.boolean().default(true),
-  nightContext: z.string().default(DEFAULT_NIGHT_CONTEXT),
   persistentPrefixes: z.array(z.object({
     tool: z.string(),
     prefix: z.string(),
@@ -239,10 +235,7 @@ export function apply(ctx: PluginContext, configInput: Config): void {
    */
   if (config.nightCommand) {
     ctx.inject(['commands'], (commandCtx) => {
-      const registered = installNightCommand(commandCtx, {
-        states: night,
-        contextText: config.nightContext,
-      })
+      const registered = installNightCommand(commandCtx, { states: night })
       if (!registered) {
         commandCtx.logger.warn('dsh-approve-prefix: commands service is present but has no register(); /night is unavailable')
       }
