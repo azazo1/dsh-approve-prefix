@@ -29,6 +29,8 @@ export interface ApprovalDecisionInput {
     readonly prefixes: readonly string[];
     /** 插件配置. */
     readonly config: PluginConfig;
+    /** 审批请求的工具名, 用来选 bash / pwsh 判定器. */
+    readonly toolName: string;
 }
 /** 未自动放行时的原因, 用来区分 "前缀未命中直接拒绝" 与 "仍转人工". */
 export type ApprovalSkipReason = 'not-escalation' | 'mode' | 'no-command' | 'prefix';

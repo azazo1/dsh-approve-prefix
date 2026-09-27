@@ -45,6 +45,8 @@ src/
 │   ├── approved-schema.ts   给 bash / pwsh 参数 schema 补 approved
 │   ├── escalation.ts        提权理由里的目标档位解析
 │   └── pending-commands.ts  callId 到命令原文的有界一次性记录表
+├── prompt/
+│   └── allow-prefixes.ts    系统提示词段: 当前前缀, approved 与匹配条件
 ├── prefix/
 │   ├── judge.ts             单命令判定与 argv 前缀匹配
 │   ├── pwsh-judge.ts        pwsh ParseInput 摘要的白名单
@@ -79,6 +81,8 @@ client bundle 必须是自包含的普通脚本, 不能出现 `import`/`export`,
 模型只填 schema 里出现的字段. 本插件在 `tools` 服务就绪后, 就地给 `config.tools` 里那些工具的 `parameters.properties` 补上可选布尔 `approved`; bash 会在 jobs 服务出现后重新注册, 所以还要听 `tools/change` 再补一次. 官方工具包本身不改.
 
 它不能用来骗放行: 前缀命中时本来就会 `allowed-once`, 与有没有这个字段无关. 它只改变 "前缀未命中" 的失败路径: 写了严格布尔 `true` 就 `rejected` (模型已经自称批准, 不再打扰人), 没写或值不对仍弹人工. 档位不在白名单, 不是提权, 或命令没记下, 即使带了这个字段也还是转人工.
+
+模型要知道此刻有哪些前缀, 才能决定写不写这个字段. `systemPrompt` 就绪后注册 `approve-prefix:allow-prefixes` (order `10300`, 在第一方 persona 后缀之后), 文本每次组装现算, 并关闭变量插值. 静态前缀列在每个配置工具下, 持久前缀按工具过滤, 临时前缀只取组装上下文里那个会话; 没有 agent 时临时表按空处理. 同一前缀只保留更宽的来源. 段里同时用几句话说明单命令匹配和 `approved` 的失败路径, 避免只在参数 schema 里留一句而模型看不到当前表.
 
 ## 已知边界
 

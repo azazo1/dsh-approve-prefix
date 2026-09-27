@@ -12,7 +12,7 @@ import type { PluginContext, ToolsServiceLike } from '../host-types.js'
 
 /** 模型可见的 `approved` 字段说明, 跟 bash 其他参数一样用英文. */
 export const APPROVED_PARAMETER_DESCRIPTION
-  = 'Optional. true claims this command already matches a user-configured allow prefix. '
+  = 'Optional. Set true only when this command matches an allow prefix listed in the system prompt. '
     + 'If true but the prefix misses, the call is rejected without a human dialog. '
     + 'Omit this field to keep the dialog.'
 

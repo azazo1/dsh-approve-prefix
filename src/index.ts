@@ -1,13 +1,15 @@
 /**
  * dsh-approve-prefix: 在审批瀑布上按 "单命令前缀" 自动放行沙箱提权请求.
  *
- * 插件做三件事:
+ * 插件做这些事:
  * 1. 在 `tools/pre-execute` 阶段记下每次工具调用的命令原文, 以 callId 为键;
  * 2. 以 `{ prepend: true }` 把应答器插到 `approval/request` 瀑布最前面, 命令命中放行前缀时
  *    返回 `allowed-once`; 前缀未命中且参数里有 `approved: true` 时返回 `rejected`;
  *    其余 `next()` 交回人工审批 (见 approval/answerer.ts);
  * 3. 有 tools 服务时, 给 config.tools 里的工具参数 schema 补上 `approved`, 让模型看得见这个字段;
- * 4. 有 webServer 与 connection 时挂认证 HTTP, 给会话视图 tab 管理当前会话的临时前缀.
+ * 4. 有 systemPrompt 服务时, 注册一段系统提示词, 每次组装时列出当前放行前缀, 并简短说明
+ *    `approved` 与前缀匹配条件;
+ * 5. 有 webServer 与 connection 时挂认证 HTTP, 给会话视图 tab 管理当前会话的临时前缀.
  *
  * 放行前缀来自三处, 全部由用户显式给出: profile 装配层的静态 `prefixes`, settings 里由配置页
  * 维护的持久前缀, 以及只在当前会话生效的临时前缀. 插件不从审批结果里学任何东西:
@@ -24,7 +26,13 @@ import { PendingCommands } from './approval/pending-commands.js'
 import { normalizeConfig } from './config.js'
 import type { PluginContext } from './host-types.js'
 import { PersistentPrefixes } from './prefix/persistent.js'
+import { sessionKeyOf } from './prefix/session-key.js'
 import { TemporaryPrefixes } from './prefix/temporary.js'
+import {
+  ALLOW_PREFIX_SECTION_NAME,
+  ALLOW_PREFIX_SECTION_ORDER,
+  renderAllowPrefixSection,
+} from './prompt/allow-prefixes.js'
 import { mountSessionPrefixRoutes } from './session-api/routes.js'
 import type { Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -125,6 +133,29 @@ export function apply(ctx: PluginContext, configInput: Config): void {
     const tools = toolCtx.tools
     if (tools === undefined) return
     installApprovedSchemaPatch(toolCtx, tools, config.tools)
+  })
+
+  /*
+   * systemPrompt 同样可选: 没有提示词服务时审批照常, 只是模型看不到当前前缀表.
+   * 文本闭包每次组装都重读持久表和当前会话的临时表.
+   */
+  ctx.inject(['systemPrompt'], (promptCtx) => {
+    const systemPrompt = promptCtx.systemPrompt
+    if (systemPrompt === undefined) return
+    systemPrompt.section({
+      name: ALLOW_PREFIX_SECTION_NAME,
+      order: ALLOW_PREFIX_SECTION_ORDER,
+      interpolate: false,
+      text: (context) => renderAllowPrefixSection({
+        tools: config.tools,
+        staticPrefixes: config.prefixes,
+        persistent: persistent.list(),
+        temporary: temporary.list(sessionKeyOf(context.agent)),
+        allowedEscalationModes: config.allowedEscalationModes,
+        extraDeniedCharacters: config.extraDeniedCharacters,
+        onlyEscalations: config.onlyEscalations,
+      }),
+    })
   })
 
   /*

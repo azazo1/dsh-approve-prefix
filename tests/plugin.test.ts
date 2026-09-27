@@ -12,12 +12,14 @@ import type {
   HttpRequestLike,
   HttpResponseLike,
   InjectedContext,
+  PromptSectionLike,
   ToolDefinitionLike,
   ToolExecutionLike,
   WebServerRouteLike,
 } from '../src/host-types.ts'
 import { apply } from '../src/index.ts'
 import type { ApprovePrefixSettings, PersistentPrefixEntry } from '../src/prefix/settings.ts'
+import { ALLOW_PREFIX_SECTION_NAME, ALLOW_PREFIX_SECTION_ORDER } from '../src/prompt/allow-prefixes.ts'
 import { prefixesPath } from '../src/session-api/paths.ts'
 
 /** 人工拒绝在测试里的占位结果. */
@@ -58,6 +60,8 @@ interface FakeHost {
   toolParameters(name: string): unknown
   /** 模拟 bash 重新注册, 触发 tools/change. */
   replaceTool(name: string, parameters: Record<string, unknown>): void
+  /** 插件注册的系统提示词段. */
+  sections: PromptSectionLike[]
 }
 
 interface CreateHostOptions {
@@ -80,6 +84,7 @@ function createHost(
   let rejection: 401 | 403 | undefined
   let connectionPresent = options.connection !== false
   const webEnabled = options.webServer !== false
+  const sections: PromptSectionLike[] = []
   const toolRegistry = new Map<string, ToolDefinitionLike>([
     ['bash', { parameters: { type: 'object', properties: { command: { type: 'string' }, description: { type: 'string' } }, required: ['command', 'description'] } }],
     ['pwsh', { parameters: { type: 'object', properties: { command: { type: 'string' }, description: { type: 'string' } }, required: ['command', 'description'] } }],
@@ -101,6 +106,12 @@ function createHost(
     tools: {
       get(name: string): ToolDefinitionLike | undefined {
         return toolRegistry.get(name)
+      },
+    },
+    systemPrompt: {
+      section(section: PromptSectionLike): () => void {
+        sections.push(section)
+        return () => {}
       },
     },
     webServer: webEnabled
@@ -153,6 +164,7 @@ function createHost(
 
   return {
     logs,
+    sections,
     toolParameters(name) {
       return toolRegistry.get(name)?.parameters
     },
@@ -497,6 +509,47 @@ describe('会话级临时前缀', () => {
     expect(await host.approve({ ...escalation('call-1'), toolName: 'custom' })).toBe(HUMAN_ALLOW)
     await host.preExecute({ callId: 'call-2', command: 'gh api user' })
     expect(await host.approve(escalation('call-2'))).toBe(HUMAN_REJECT)
+  })
+})
+
+describe('系统提示词', () => {
+  function render(section: PromptSectionLike, sessionKey?: string): string {
+    if (typeof section.text !== 'function') return section.text
+    return section.text(sessionKey === undefined ? {} : { agent: { session: { id: sessionKey } } })
+  }
+
+  test('列出静态, 持久和当前会话临时前缀, 并说明 approved', async () => {
+    const store: FakeSettingsStore = {
+      persistentPrefixes: [{ tool: 'bash', prefix: 'git status' }],
+    }
+    const host = createHost({ prefixes: ['gh api'], tools: ['bash', 'pwsh'] }, store)
+    expect(host.sections).toHaveLength(1)
+    const section = host.sections[0]
+    expect(section?.name).toBe(ALLOW_PREFIX_SECTION_NAME)
+    expect(section?.order).toBe(ALLOW_PREFIX_SECTION_ORDER)
+    expect(section?.interpolate).toBe(false)
+    if (section === undefined) return
+
+    const first = render(section, FIRST_SESSION)
+    expect(first).toContain('`gh api`')
+    expect(first).toContain('`git status` (saved)')
+    expect(first).toContain('approved:')
+    expect(first).toContain('one simple command')
+    expect(first).not.toContain('npm test')
+
+    const put = await host.request('PUT', prefixesPath(FIRST_SESSION), {
+      body: { entries: [{ tool: 'bash', prefix: 'npm test' }] },
+    })
+    expect(put.status).toBe(200)
+    const updated = render(section, FIRST_SESSION)
+    expect(updated).toContain('`npm test` (this session)')
+    expect(render(section, SECOND_SESSION)).not.toContain('npm test')
+    expect(render(section)).not.toContain('npm test')
+
+    store.persistentPrefixes = []
+    expect(render(section, FIRST_SESSION)).not.toContain('git status')
+    expect(render(section, FIRST_SESSION)).toContain('pwsh:')
+    expect(render(section, FIRST_SESSION)).toContain('parsed by local pwsh')
   })
 })
 

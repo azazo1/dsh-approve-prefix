@@ -103,6 +103,32 @@ export interface ToolsServiceLike {
     /** 按名取当前可见的工具定义. */
     get(name: string): ToolDefinitionLike | undefined;
 }
+/**
+ * 一次系统提示词组装的上下文, 只取本插件要读的 agent.
+ *
+ * 对应 dsh-agent 合并进 `AssembleContext` 的 `agent` 字段. 诊断用的裸 assemble 没有 agent.
+ */
+export interface AssembleContextLike {
+    readonly agent?: unknown;
+}
+/** 注册到 `ctx.systemPrompt` 的一段提示词. */
+export interface PromptSectionLike {
+    readonly name: string;
+    readonly order: number;
+    /** 静态文本, 或每次组装时现算的文本. */
+    readonly text: string | ((context: AssembleContextLike) => string);
+    /** 为 false 时不做 `{{variable}}` 插值. 前缀原文可能含花括号, 必须关掉. */
+    readonly interpolate?: boolean;
+}
+/** systemPrompt 服务中本插件用到的方法. */
+export interface SystemPromptLike {
+    /**
+     * 注册一段系统提示词. 效果挂在调用方 context 上, 插件卸载时移除.
+     * @param section - 段定义.
+     * @returns 取消注册.
+     */
+    section(section: PromptSectionLike): () => void;
+}
 /** 本插件消费的最小 Context 形状. */
 export interface PluginContext {
     /** 注册 `tools/pre-execute` 监听器, 用于记下每次工具调用的命令原文. */
@@ -127,4 +153,5 @@ export interface InjectedContext extends PluginContext {
     readonly webServer?: WebServerLike;
     readonly connection?: ConnectionServiceLike;
     readonly tools?: ToolsServiceLike;
+    readonly systemPrompt?: SystemPromptLike;
 }

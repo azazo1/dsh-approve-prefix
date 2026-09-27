@@ -1,21 +1,17 @@
 /**
  * 单命令前缀判定: 判断一条 shell 命令是否属于 "单条简单命令, 且 argv 前缀命中白名单".
  *
- * 判定分两层. 第一层是结构元字符的整串扫描, 命中管道, 链式, 重定向, 命令替换
- * 等任意一个字符就直接拒绝; 第二层按引号规则分词, 去掉命令行前缀形式的环境变量赋值
- * (以及 `env` 包装), 再做 argv 前缀匹配. 两层都通过才返回 allowed.
+ * bash 用 unbash 解析; pwsh 调本机 pwsh 做 ParseInput. 再按白名单检查: 必须恰好
+ * 一条简单命令, 不能有管道, 链式, 子 shell, 后台, 重定向, 以及会改写或执行其它
+ * 命令的词展开. bash 通过后再去掉命令行前缀形式的环境变量赋值 (以及 `env` 包装),
+ * 做 argv 前缀匹配.
  *
  * 本模块只做命令解析, 不涉及任何策略或状态.
  *
  * @module dsh-approve-prefix/prefix/judge
  */
-/**
- * 结构元字符: 固定拒绝, 不随配置放宽.
- *
- * 这些字符能组成第二条命令, 重定向输出或做命令替换, 属于 "一条命令" 判定的前提,
- * 因此不允许通过配置移除; 需要更严的限制用 extraDeniedCharacters 追加.
- */
-export declare const STRUCTURAL_METACHARACTERS: readonly string[];
+/** 命令所属的 shell 方言. 未列入的工具名按 bash 处理. */
+export type CommandDialect = 'bash' | 'pwsh';
 /** 一条命令的判定结果. */
 export interface PrefixVerdict {
     /** 是否允许自动放行. */
@@ -35,25 +31,25 @@ export interface CommandInspection {
     readonly detail: string;
 }
 /**
- * 按引号规则把命令切成 argv, 引号本身不进入 token.
- *
- * 未闭合的引号返回 undefined, 由调用方按拒绝处理.
- * @param text - 已 trim 的命令文本.
- * @returns token 数组, 或 undefined 表示引号不闭合.
- */
-export declare function tokenizeCommand(text: string): string[] | undefined;
-/**
  * 检查一条命令是否是单条简单命令, 通过时给出归约后的命令 token.
  * @param command - 模型给出的完整命令文本.
- * @param extraDeniedCharacters - 额外拒绝的单字符, 与结构元字符一起参与扫描.
+ * @param extraDeniedCharacters - 额外拒绝的单字符, 对命令原文做整串扫描.
+ * @param dialect - bash 走 unbash, pwsh 走本机 ParseInput.
  * @returns 检查结果.
  */
-export declare function inspectSingleCommand(command: string, extraDeniedCharacters?: readonly string[]): CommandInspection;
+export declare function inspectSingleCommand(command: string, extraDeniedCharacters?: readonly string[], dialect?: CommandDialect): CommandInspection;
+/**
+ * 按引号与 bash 词法给出 argv; 不是单条简单命令时返回 undefined.
+ * @param text - 命令文本.
+ * @returns token 数组, 或 undefined.
+ */
+export declare function tokenizeCommand(text: string): string[] | undefined;
 /**
  * 判断一条命令是否命中白名单前缀, 且命令本身是单条简单命令.
  * @param command - 模型给出的完整命令文本.
  * @param prefixes - 允许的前缀表, 每项是空格分隔的命令词序列, 例如 `gh api`.
- * @param extraDeniedCharacters - 额外拒绝的单字符, 与结构元字符一起参与扫描.
+ * @param extraDeniedCharacters - 额外拒绝的单字符, 对命令原文做整串扫描.
+ * @param dialect - bash 走 unbash, pwsh 走本机 ParseInput.
  * @returns 判定结果.
  */
-export declare function judgeSingleCommandPrefix(command: string, prefixes: readonly string[], extraDeniedCharacters?: readonly string[]): PrefixVerdict;
+export declare function judgeSingleCommandPrefix(command: string, prefixes: readonly string[], extraDeniedCharacters?: readonly string[], dialect?: CommandDialect): PrefixVerdict;
