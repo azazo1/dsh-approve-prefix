@@ -12,6 +12,7 @@ import type {
   HttpRequestLike,
   HttpResponseLike,
   InjectedContext,
+  PromptAssemblyLike,
   PromptSectionLike,
   ToolDefinitionLike,
   ToolExecutionLike,
@@ -60,6 +61,8 @@ interface FakeHost {
   toolParameters(name: string): unknown
   /** 模拟 bash 重新注册, 触发 tools/change. */
   replaceTool(name: string, parameters: Record<string, unknown>): void
+  /** 走一次 system-prompt/assemble, 看发给模型的 schema 补丁. */
+  assemble(assembly: PromptAssemblyLike): Promise<PromptAssemblyLike>
   /** 插件注册的系统提示词段. */
   sections: PromptSectionLike[]
 }
@@ -78,6 +81,11 @@ function createHost(
   const preExecuteListeners: Array<(execution: ToolExecutionLike, next: () => Promise<unknown>) => Promise<unknown>> = []
   const approvalListeners: Array<(request: ApprovalRequestLike, next: () => Promise<ApprovalOutcome>) => Promise<ApprovalOutcome>> = []
   const changeListeners: Array<() => void> = []
+  const assembleListeners: Array<(
+    assembly: PromptAssemblyLike,
+    context: { agent?: unknown; scope?: unknown },
+    next: () => Promise<PromptAssemblyLike>,
+  ) => Promise<PromptAssemblyLike>> = []
   const routes: WebServerRouteLike[] = []
   const logs: string[] = []
   const prepended: boolean[] = []
@@ -125,6 +133,7 @@ function createHost(
     on(event: string, listener: unknown, options?: { prepend?: boolean }): unknown {
       if (event === 'tools/pre-execute') preExecuteListeners.push(listener as never)
       if (event === 'tools/change') changeListeners.push(listener as () => void)
+      if (event === 'system-prompt/assemble') assembleListeners.push(listener as never)
       if (event === 'approval/request') {
         approvalListeners.push(listener as never)
         prepended.push(options?.prepend === true)
@@ -171,6 +180,15 @@ function createHost(
     replaceTool(name, parameters) {
       toolRegistry.set(name, { parameters })
       for (const listener of changeListeners) listener()
+    },
+    async assemble(assembly) {
+      let index = 0
+      const next = async (): Promise<PromptAssemblyLike> => {
+        const listener = assembleListeners[index]
+        index += 1
+        return listener === undefined ? assembly : listener(assembly, {}, next)
+      }
+      return next()
     },
     async preExecute(execution) {
       const argumentsValue: Record<string, unknown> = { command: execution.command, description: 'test call' }
@@ -408,6 +426,28 @@ describe('模型自报 approved: true', () => {
     host.replaceTool('bash', { type: 'object', properties: { command: { type: 'string' } } })
     const parameters = host.toolParameters('bash') as { properties: { approved: { type: string } } }
     expect(parameters.properties.approved.type).toBe('boolean')
+  })
+
+  test('assemble 给发给模型的 schema 副本补 approved, 不改其它工具', async () => {
+    const host = createHost({ tools: ['bash'] })
+    const bashParameters = { type: 'object', properties: { command: { type: 'string' } } }
+    const otherParameters = { type: 'object', properties: { path: { type: 'string' } } }
+    const assembled = await host.assemble({
+      tools: [
+        { name: 'bash', parameters: bashParameters },
+        { name: 'read', parameters: otherParameters },
+      ],
+    })
+    expect((assembled.tools[0]?.parameters as { properties: { approved: { type: string } } }).properties.approved.type).toBe('boolean')
+    expect((assembled.tools[1]?.parameters as { properties: { approved?: unknown } }).properties.approved).toBeUndefined()
+  })
+
+  test('assemble 也能补上全局注册表里没有的 bash (agent 平面)', async () => {
+    const host = createHost({ tools: ['bash'] })
+    host.replaceTool('bash', { type: 'object', properties: { command: { type: 'string' } } })
+    const clone = { type: 'object', properties: { command: { type: 'string' } } }
+    const assembled = await host.assemble({ tools: [{ name: 'bash', parameters: clone }] })
+    expect((assembled.tools[0]?.parameters as { properties: { approved: { type: string } } }).properties.approved.type).toBe('boolean')
   })
 })
 

@@ -63,7 +63,7 @@ src/
     └── index.ts             client 半边: Settings 配置页与会话 tab
 ```
 
-判定条件集中在 `approval/answerer.ts` 的 `decideApproval`, 顺序即文档顺序; 监听器只负责取命令, 记日志, 返回 `allowed-once` / `rejected` / `next()`. 前缀未命中且参数 `approved === true` 时返回 `rejected`; 其余失败仍 `next()`. 临时表由会话 tab 经认证 HTTP 整表替换; TUI / headless 没有这条管理面.
+判定条件集中在 `approval/answerer.ts` 的 `decideApproval`, 顺序即文档顺序; 监听器只负责取命令, 记日志, 返回 `allowed-once` / `rejected` / `next()`. 前缀未命中且参数 `approved === true` 时返回 `rejected`; 其余失败仍 `next()`. 临时表由会话 tab 经认证 HTTP 整表替换, 但 tab 里的编辑先停在草稿, 点应用才 PUT; TUI / headless 没有这条管理面.
 
 插件对宿主包零运行时依赖: `host-types.ts` 用结构类型描述 Context, 事件载荷与服务视图. 外部依赖只有 settings schema 需要的 `@deepseek-ai/schemastery`, 以及判定用的 `unbash` (0 传递依赖的 bash AST). settings 服务在注册时直接调用 schema, 不做跨副本的类型判断, 所以插件自带一份不影响正确性.
 
@@ -78,7 +78,7 @@ client bundle 必须是自包含的普通脚本, 不能出现 `import`/`export`,
 
 ## 模型自报 `approved: true`
 
-模型只填 schema 里出现的字段. 本插件在 `tools` 服务就绪后, 就地给 `config.tools` 里那些工具的 `parameters.properties` 补上可选布尔 `approved`; bash 会在 jobs 服务出现后重新注册, 所以还要听 `tools/change` 再补一次. 官方工具包本身不改.
+模型只填 schema 里出现的字段. 发给模型的 schema 来自 `system-prompt/assemble`, 那一步会 structuredClone parameters, 且 bash / pwsh 注册在 agent preset 平面, 宿主插件的 `tools.get('bash')` 看不到. 因此本插件在 assemble 瀑布里给这一次下发的副本补上可选布尔 `approved`; 全局层若碰巧有同名工具, 仍顺手改活定义并听 `tools/change`. 官方工具包本身不改.
 
 它不能用来骗放行: 前缀命中时本来就会 `allowed-once`, 与有没有这个字段无关. 它只改变 "前缀未命中" 的失败路径: 写了严格布尔 `true` 就 `rejected` (模型已经自称批准, 不再打扰人), 没写或值不对仍弹人工. 档位不在白名单, 不是提权, 或命令没记下, 即使带了这个字段也还是转人工.
 

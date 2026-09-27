@@ -6,7 +6,8 @@
  * 2. 以 `{ prepend: true }` 把应答器插到 `approval/request` 瀑布最前面, 命令命中放行前缀时
  *    返回 `allowed-once`; 前缀未命中且参数里有 `approved: true` 时返回 `rejected`;
  *    其余 `next()` 交回人工审批 (见 approval/answerer.ts);
- * 3. 有 tools 服务时, 给 config.tools 里的工具参数 schema 补上 `approved`, 让模型看得见这个字段;
+ * 3. 在 `system-prompt/assemble` 给发给模型的工具 schema 副本补上 `approved`; 有 tools 服务时
+ *    也给全局注册表打补丁, 但 bash 在 agent preset 上时全局 get 看不到, 不能只靠这一条;
  * 4. 有 systemPrompt 服务时, 注册一段系统提示词, 每次组装时列出当前放行前缀, 并简短说明
  *    `approved` 与前缀匹配条件;
  * 5. 有 webServer 与 connection 时挂认证 HTTP, 给会话视图 tab 管理当前会话的临时前缀.

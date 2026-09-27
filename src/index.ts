@@ -6,7 +6,8 @@
  * 2. 以 `{ prepend: true }` 把应答器插到 `approval/request` 瀑布最前面, 命令命中放行前缀时
  *    返回 `allowed-once`; 前缀未命中且参数里有 `approved: true` 时返回 `rejected`;
  *    其余 `next()` 交回人工审批 (见 approval/answerer.ts);
- * 3. 有 tools 服务时, 给 config.tools 里的工具参数 schema 补上 `approved`, 让模型看得见这个字段;
+ * 3. 在 `system-prompt/assemble` 给发给模型的工具 schema 副本补上 `approved`; 有 tools 服务时
+ *    也给全局注册表打补丁, 但 bash 在 agent preset 上时全局 get 看不到, 不能只靠这一条;
  * 4. 有 systemPrompt 服务时, 注册一段系统提示词, 每次组装时列出当前放行前缀, 并简短说明
  *    `approved` 与前缀匹配条件;
  * 5. 有 webServer 与 connection 时挂认证 HTTP, 给会话视图 tab 管理当前会话的临时前缀.
@@ -21,7 +22,7 @@
  */
 
 import { installApprovalAnswerer } from './approval/answerer.js'
-import { installApprovedSchemaPatch } from './approval/approved-schema.js'
+import { installApprovedAssemblyPatch, installApprovedSchemaPatch } from './approval/approved-schema.js'
 import { PendingCommands } from './approval/pending-commands.js'
 import { DEFAULT_TOOLS, normalizeConfig, presentToolNames } from './config.js'
 import type { PluginContext } from './host-types.js'
@@ -100,13 +101,13 @@ function readSelfApproved(argumentsValue: unknown): boolean {
 /**
  * 从 `ctx.get('tools')` 取出按名查找.
  * @param value - 可能还没就绪的 tools 服务.
- * @returns 查得到工具时的查找函数, 否则 undefined.
+ * @returns 查得到工具时的查找函数, 否则 undefined. 第二参是 agent / scope, 用来看见 preset 平面上的 bash.
  */
-function toolLookup(value: unknown): ((name: string) => unknown) | undefined {
+function toolLookup(value: unknown): ((name: string, scope?: unknown) => unknown) | undefined {
   if (typeof value !== 'object' || value === null || !('get' in value)) return undefined
   const get = (value as { get?: unknown }).get
   if (typeof get !== 'function') return undefined
-  return (name: string) => get.call(value, name)
+  return (name: string, scope?: unknown) => get.call(value, name, scope)
 }
 
 /**
@@ -136,10 +137,11 @@ export function apply(ctx: PluginContext, configInput: Config): void {
   })
 
   installApprovalAnswerer(ctx, { config, pending, temporary, persistent: () => persistent })
+  installApprovedAssemblyPatch(ctx, config.tools)
 
   /*
-   * tools 也是可选 inject: 没有注册表时审批判定照常, 只是模型看不见 approved 字段.
-   * bash 会在 jobs 服务就绪后重新注册, 所以还要听 tools/change 再打一次补丁.
+   * tools 也是可选 inject: 没有注册表时审批判定照常, 发给模型的 schema 仍靠 assemble 补丁.
+   * 全局层若有 bash, 这里再打一次活定义, 并听 tools/change (jobs 就绪后重新注册).
    */
   ctx.inject(['tools'], (toolCtx) => {
     const tools = toolCtx.tools
@@ -158,15 +160,22 @@ export function apply(ctx: PluginContext, configInput: Config): void {
       name: ALLOW_PREFIX_SECTION_NAME,
       order: ALLOW_PREFIX_SECTION_ORDER,
       interpolate: false,
-      text: (context) => renderAllowPrefixSection({
-        tools: presentToolNames(config.tools, toolLookup(promptCtx.get('tools'))),
-        staticPrefixes: config.prefixes,
-        persistent: persistent.list(),
-        temporary: temporary.list(sessionKeyOf(context.agent)),
-        allowedEscalationModes: config.allowedEscalationModes,
-        extraDeniedCharacters: config.extraDeniedCharacters,
-        onlyEscalations: config.onlyEscalations,
-      }),
+      text: (context) => {
+        const lookup = toolLookup(promptCtx.get('tools'))
+        const scope = context.scope ?? context.agent
+        return renderAllowPrefixSection({
+          tools: presentToolNames(
+            config.tools,
+            lookup === undefined ? undefined : name => lookup(name, scope),
+          ),
+          staticPrefixes: config.prefixes,
+          persistent: persistent.list(),
+          temporary: temporary.list(sessionKeyOf(context.agent)),
+          allowedEscalationModes: config.allowedEscalationModes,
+          extraDeniedCharacters: config.extraDeniedCharacters,
+          onlyEscalations: config.onlyEscalations,
+        })
+      },
     })
   })
 

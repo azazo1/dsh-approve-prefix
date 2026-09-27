@@ -6,7 +6,7 @@
  * 命名空间与字段名与 `src/prefix/settings.ts` 是同一份契约, 改动时两边要一起改.
  *
  * 表单骨架用官方 SettingsFormModel + SettingsForm (草稿, 已覆盖标记, 保存语义都与其它插件一致),
- * 行编辑器 (工具名 + 前缀两列, 可增删) 自绘并嵌在官方表单里.
+ * 行编辑器 (工具名 + 前缀两列, 可增删) 自绘并嵌在官方表单里. 会话 tab 的编辑停在草稿, 点应用才 PUT.
  *
  * 文案走 client locale 注册, 跟随界面语言; locale 服务缺席时回退到中文.
  *
@@ -31,9 +31,12 @@ const zh = {
   'intro': '只放行单条命令, 含管道, 分号, &&, 重定向或命令替换的命令一律转人工. '
     + '只想在当前会话里临时放行, 打开会话视图里的「放行前缀」.',
   'tab.label': '放行前缀',
-  'tab.intro': '只对当前会话生效, 进程重启即清空. 改完立刻写入, 没有保存按钮.',
+  'tab.intro': '只对当前会话生效, 进程重启即清空. 改完后点应用才会写入当前会话, 未点之前审批仍用上一份已应用的表.',
   'tab.empty': '还没有本次会话的临时前缀',
-  'tab.clear': '清空当前会话',
+  'tab.clear': '清空草稿',
+  'tab.apply': '应用',
+  'tab.applying': '应用中...',
+  'tab.discard': '放弃更改',
   'tab.limit': '已达到本会话上限',
   'tab.loadFailed': '读不到当前会话的临时前缀',
   'tab.saveFailed': '没能写入当前会话的临时前缀',
@@ -64,9 +67,12 @@ const en: Record<string, string> = {
   'intro': 'Only a single command qualifies; pipelines, semicolons, &&, redirection and command substitution always go to a human. '
     + 'For a prefix that lives only in the current session, open Allow prefixes in the session view.',
   'tab.label': 'Allow prefixes',
-  'tab.intro': 'Applies to this session only and is cleared when the process restarts. Edits write immediately; there is no save button.',
+  'tab.intro': 'Applies to this session only and is cleared when the process restarts. Click Apply to write the list; until then approvals still use the last applied table.',
   'tab.empty': 'no temporary prefix in this session yet',
-  'tab.clear': 'clear this session',
+  'tab.clear': 'clear draft',
+  'tab.apply': 'Apply',
+  'tab.applying': 'Applying...',
+  'tab.discard': 'Discard',
   'tab.limit': 'this session has reached its limit',
   'tab.loadFailed': 'could not read this session\'s temporary prefixes',
   'tab.saveFailed': 'could not write this session\'s temporary prefixes',
@@ -432,6 +438,7 @@ const CSS_TEXT = `
 .dsh-ap-tab-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .dsh-ap-tab-title {
@@ -564,7 +571,7 @@ function createCard(React: ReactLike, primitives: PrimitivesLike): (props: CardP
 }
 
 /**
- * 造出会话视图 tab: 管理当前会话的临时前缀, 改完立刻 PUT.
+ * 造出会话视图 tab: 管理当前会话的临时前缀, 编辑只改草稿, 点应用才 PUT.
  * @param React - module loader 提供的 react.
  * @param primitives - 官方 Input 与 Button.
  * @returns tab 组件.
@@ -577,32 +584,46 @@ function createSessionTab(React: ReactLike, primitives: PrimitivesLike): (props:
   return function SessionTab(props: SessionTabProps): unknown {
     const { sessionId, t } = props
     const [entries, setEntries] = React.useState<PersistentPrefixEntry[]>([])
+    const [applied, setApplied] = React.useState<PersistentPrefixEntry[]>([])
     const [limit, setLimit] = React.useState(32)
     const [defaultTool, setDefaultTool] = React.useState('bash')
     const [loading, setLoading] = React.useState(true)
+    const [applying, setApplying] = React.useState(false)
     const [error, setError] = React.useState('')
     const [bag] = React.useState({ write: 0 })
 
-    const persist = (next: PersistentPrefixEntry[]): void => {
-      if (next.some(entry => validateEntry(entry) !== undefined)) return
+    const adopt = (list: readonly PersistentPrefixEntry[]): PersistentPrefixEntry[] =>
+      list.map(entry => ({ tool: entry.tool, prefix: entry.prefix }))
+
+    const applyDraft = (): void => {
+      if (entries.some(entry => validateEntry(entry) !== undefined)) return
+      if (serializeEntries(entries) === serializeEntries(applied)) return
       const mine = ++bag.write
-      void requestPrefixes(sessionId, 'PUT', next).then((payload) => {
+      setApplying(true)
+      void requestPrefixes(sessionId, 'PUT', entries).then((payload) => {
         if (mine !== bag.write) return
-        setEntries(payload.entries.map(entry => ({ tool: entry.tool, prefix: entry.prefix })))
+        const next = adopt(payload.entries)
+        setEntries(next)
+        setApplied(next)
         setError('')
+        setApplying(false)
       }).catch(() => {
         if (mine !== bag.write) return
         setError(t('tab.saveFailed'))
+        setApplying(false)
       })
     }
 
     React.useEffect(() => {
       let cancelled = false
       setLoading(true)
+      setApplying(false)
       setError('')
       void requestPrefixes(sessionId, 'GET').then((payload) => {
         if (cancelled) return
-        setEntries(payload.entries.map(entry => ({ tool: entry.tool, prefix: entry.prefix })))
+        const next = adopt(payload.entries)
+        setEntries(next)
+        setApplied(next)
         setLimit(payload.limit)
         setDefaultTool(payload.defaultTool)
         setLoading(false)
@@ -611,17 +632,21 @@ function createSessionTab(React: ReactLike, primitives: PrimitivesLike): (props:
         setError(t('tab.loadFailed'))
         setLoading(false)
       })
-      return () => { cancelled = true }
+      return () => {
+        cancelled = true
+        bag.write += 1
+      }
     }, [sessionId])
 
     const invalidLine = entries.find(entry => validateEntry(entry) !== undefined)
     const errorKey = invalidLine === undefined ? undefined : validateEntry(invalidLine)
     const atLimit = entries.length >= limit
+    const dirty = serializeEntries(entries) !== serializeEntries(applied)
+    const applyDisabled = loading || applying || !dirty || errorKey !== undefined
+    const editingDisabled = loading || applying
 
     const update = (index: number, patch: Partial<PersistentPrefixEntry>): void => {
-      const next = entries.map((entry, position) => position === index ? { ...entry, ...patch } : entry)
-      setEntries(next)
-      persist(next)
+      setEntries(entries.map((entry, position) => position === index ? { ...entry, ...patch } : entry))
     }
 
     const rows = entries.map((entry, index) => el('div', { className: 'row', key: `row-${String(index)}` },
@@ -631,6 +656,7 @@ function createSessionTab(React: ReactLike, primitives: PrimitivesLike): (props:
         placeholder: t('placeholder.tool'),
         'aria-label': t('column.tool'),
         spellCheck: false,
+        disabled: editingDisabled,
         onChange: (event: { currentTarget: { value: string } }) => { update(index, { tool: event.currentTarget.value }) },
       }),
       el(Input, {
@@ -639,16 +665,14 @@ function createSessionTab(React: ReactLike, primitives: PrimitivesLike): (props:
         placeholder: t('placeholder.prefix'),
         'aria-label': t('column.prefix'),
         spellCheck: false,
+        disabled: editingDisabled,
         onChange: (event: { currentTarget: { value: string } }) => { update(index, { prefix: event.currentTarget.value }) },
       }),
       el(Button, {
         variant: 'ghost',
         size: 'sm',
-        onClick: () => {
-          const next = entries.filter((_entry, position) => position !== index)
-          setEntries(next)
-          persist(next)
-        },
+        disabled: editingDisabled,
+        onClick: () => { setEntries(entries.filter((_entry, position) => position !== index)) },
       }, t('action.remove'))))
 
     return el('div', { className: 'dsh-ap-tab' },
@@ -657,11 +681,23 @@ function createSessionTab(React: ReactLike, primitives: PrimitivesLike): (props:
         el(Button, {
           variant: 'ghost',
           size: 'sm',
-          disabled: entries.length === 0,
+          disabled: editingDisabled || !dirty,
           onClick: () => {
-            setEntries([])
-            persist([])
+            setEntries(adopt(applied))
+            setError('')
           },
+        }, t('tab.discard')),
+        el(Button, {
+          variant: 'outline',
+          size: 'sm',
+          disabled: applyDisabled,
+          onClick: applyDraft,
+        }, applying ? t('tab.applying') : t('tab.apply')),
+        el(Button, {
+          variant: 'ghost',
+          size: 'sm',
+          disabled: editingDisabled || entries.length === 0,
+          onClick: () => { setEntries([]) },
         }, t('tab.clear'))),
       el('p', { className: 'hint' }, t('tab.intro')),
       loading ? el('p', { className: 'empty' }, t('tab.loading')) : null,
@@ -671,11 +707,10 @@ function createSessionTab(React: ReactLike, primitives: PrimitivesLike): (props:
         el(Button, {
           variant: 'outline',
           size: 'sm',
-          disabled: atLimit,
+          disabled: editingDisabled || atLimit,
           onClick: () => {
-            if (atLimit) return
-            const next = [...entries, { tool: defaultTool, prefix: '' }]
-            setEntries(next)
+            if (editingDisabled || atLimit) return
+            setEntries([...entries, { tool: defaultTool, prefix: '' }])
           },
         }, t('action.add'))),
       atLimit ? el('p', { className: 'hint' }, t('tab.limit')) : null,

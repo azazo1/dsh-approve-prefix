@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from 'bun:test'
 
-import { APPROVED_PARAMETER_DESCRIPTION, patchApprovedParameter } from '../src/approval/approved-schema.ts'
+import { APPROVED_PARAMETER_DESCRIPTION, patchApprovedParameter, patchApprovedTools } from '../src/approval/approved-schema.ts'
 
 describe('patchApprovedParameter', () => {
   test('给 object schema 补上 boolean approved', () => {
@@ -44,5 +44,18 @@ describe('patchApprovedParameter', () => {
       properties: Object.freeze({ command: { type: 'string' } }),
     })
     expect(patchApprovedParameter(frozen)).toBe(false)
+  })
+})
+
+describe('patchApprovedTools', () => {
+  test('只给名字命中的工具补字段', () => {
+    const bash = { type: 'object', properties: { command: { type: 'string' } } }
+    const read = { type: 'object', properties: { path: { type: 'string' } } }
+    patchApprovedTools(
+      [{ name: 'bash', parameters: bash }, { name: 'read', parameters: read }],
+      ['bash'],
+    )
+    expect(bash.properties).toHaveProperty('approved')
+    expect(read.properties).not.toHaveProperty('approved')
   })
 })
