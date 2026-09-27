@@ -56,7 +56,14 @@ describe('judgeSingleCommandPrefix', () => {
     expect(allowed('gh api user < /tmp/in.json')).toBe(false)
     expect(allowed('gh api $(echo user)')).toBe(false)
     expect(allowed('gh api `echo user`')).toBe(false)
+  })
+
+  test('引号内换行仍视为单命令, 引号外换行拒绝', () => {
+    expect(allowed("gh api -f body='hello\nworld'")).toBe(true)
+    expect(allowed('gh api -f body="hello\nworld"')).toBe(true)
+    expect(allowed("gh api graphql -f query='\nquery { viewer { login } }\n'")).toBe(true)
     expect(allowed('gh api user\nrm -rf /tmp/x')).toBe(false)
+    expect(allowed("gh api -f body='hello\nworld'\nrm -rf /tmp/x")).toBe(false)
   })
 
   test('拒绝前缀不匹配的命令', () => {
@@ -91,6 +98,11 @@ describe('judgeSingleCommandPrefix', () => {
 describe('tokenizeCommand', () => {
   test('去掉引号并保留引号内的空格', () => {
     expect(tokenizeCommand(`gh api -f 'body=a b'`)).toEqual(['gh', 'api', '-f', 'body=a b'])
+  })
+
+  test('保留引号内的换行, 拒绝引号外的换行', () => {
+    expect(tokenizeCommand("gh api -f 'hello\nworld'")).toEqual(['gh', 'api', '-f', 'hello\nworld'])
+    expect(tokenizeCommand('gh api user\nrm')).toBeUndefined()
   })
 
   test('未闭合引号返回 undefined', () => {

@@ -1,9 +1,9 @@
 /**
  * 单命令前缀判定: 判断一条 shell 命令是否属于 "单条简单命令, 且 argv 前缀命中白名单".
  *
- * 判定分两层. 第一层是结构元字符的整串扫描, 命中管道, 链式, 重定向, 命令替换
- * 等任意一个字符就直接拒绝; 第二层按引号规则分词, 去掉命令行前缀形式的环境变量赋值
- * (以及 `env` 包装), 再做 argv 前缀匹配. 两层都通过才返回 allowed.
+ * 判定分两层. 第一层是结构元字符扫描: 管道, 链式, 重定向, 命令替换按整串命中即拒;
+ * 换行与回车只在引号外拒绝, 引号内视为参数内容. 第二层按引号规则分词, 去掉命令行
+ * 前缀形式的环境变量赋值 (以及 `env` 包装), 再做 argv 前缀匹配. 两层都通过才返回 allowed.
  *
  * 本模块只做命令解析, 不涉及任何策略或状态.
  *
@@ -15,8 +15,9 @@
  *
  * 这些字符能组成第二条命令, 重定向输出或做命令替换, 属于 "一条命令" 判定的前提,
  * 因此不允许通过配置移除; 需要更严的限制用 extraDeniedCharacters 追加.
+ * 换行与回车不在此列: 它们只在引号外构成第二条命令, 由 findUnquotedLineBreak 单独处理.
  */
-export const STRUCTURAL_METACHARACTERS: readonly string[] = ['|', '&', ';', '<', '>', '`', '$', '\n', '\r']
+export const STRUCTURAL_METACHARACTERS: readonly string[] = ['|', '&', ';', '<', '>', '`', '$']
 
 /** 命令行前缀形式的赋值, 例如 `ENVA=aaa`. */
 const ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=[\s\S]*$/
@@ -52,11 +53,34 @@ function describeCharacter(character: string): string {
 }
 
 /**
+ * 找出第一个未加引号的换行或回车.
+ *
+ * 引号内的换行只是参数内容, 不拆命令; 引号外的换行等价于另起一条命令.
+ * @param text - 已 trim 的命令文本.
+ * @returns 命中的字符, 没有则 undefined.
+ */
+function findUnquotedLineBreak(text: string): '\n' | '\r' | undefined {
+  let quote: '"' | "'" | undefined
+  for (const character of text) {
+    if (quote !== undefined) {
+      if (character === quote) quote = undefined
+      continue
+    }
+    if (character === '"' || character === "'") {
+      quote = character
+      continue
+    }
+    if (character === '\n' || character === '\r') return character
+  }
+  return undefined
+}
+
+/**
  * 按引号规则把命令切成 argv, 引号本身不进入 token.
  *
- * 未闭合的引号返回 undefined, 由调用方按拒绝处理.
+ * 未闭合的引号, 以及引号外的换行 / 回车, 都返回 undefined, 由调用方按拒绝处理.
  * @param text - 已 trim 的命令文本.
- * @returns token 数组, 或 undefined 表示引号不闭合.
+ * @returns token 数组, 或 undefined 表示引号不闭合或含未加引号的换行.
  */
 export function tokenizeCommand(text: string): string[] | undefined {
   const tokens: string[] = []
@@ -77,6 +101,7 @@ export function tokenizeCommand(text: string): string[] | undefined {
       started = true
       continue
     }
+    if (character === '\n' || character === '\r') return undefined
     if (character === ' ' || character === '\t') {
       if (started) {
         tokens.push(current)
@@ -139,6 +164,15 @@ export function inspectSingleCommand(command: string, extraDeniedCharacters: rea
         strippedEnvironment: false,
         detail: `the command contains ${describeCharacter(character)}, so it is not a single command`,
       }
+    }
+  }
+  const lineBreak = findUnquotedLineBreak(text)
+  if (lineBreak !== undefined) {
+    return {
+      ok: false,
+      tokens: [],
+      strippedEnvironment: false,
+      detail: `the command contains ${describeCharacter(lineBreak)}, so it is not a single command`,
     }
   }
   const tokens = tokenizeCommand(text)
