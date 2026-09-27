@@ -33,3 +33,12 @@ declare class URL {
   constructor(path: string, base?: string)
   pathname: string
 }
+
+/**
+ * 全局的 Web Crypto 面, 只取铸消息 id 用到的随机字节.
+ *
+ * Node 19 起 `globalThis.crypto` 常驻, `types` 为空时看不到它的声明, 所以在这里补一份.
+ */
+declare const crypto: {
+  getRandomValues<T extends Uint8Array>(array: T): T
+}

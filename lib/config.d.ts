@@ -5,7 +5,7 @@
  *
  * @module dsh-approve-prefix/config
  */
-/** 默认静态前缀为空: 没人显式配置时什么都不自动放行. */
+/** 默认允许自动放行的命令前缀. */
 export declare const DEFAULT_PREFIXES: readonly string[];
 /** 默认纳入记录与判定的工具名. */
 export declare const DEFAULT_TOOLS: readonly string[];
@@ -17,6 +17,13 @@ export declare const SANDBOX_MODES: readonly string[];
 export declare const DEFAULT_PENDING_CAPACITY = 128;
 /** 默认的会话级临时前缀条数上限. */
 export declare const DEFAULT_TEMPORARY_PREFIX_LIMIT = 32;
+/**
+ * 默认在打开 night 时交给 agent 的上下文.
+ *
+ * 这段是给 "刚刚被打开" 那一刻用的, 说明用户已经离开, 以及宿主接下来会怎么拦;
+ * 持续生效的完整规则由系统提示词段负责.
+ */
+export declare const DEFAULT_NIGHT_CONTEXT: string;
 /** 校验后的插件配置. */
 export interface PluginConfig {
     /** 配置文件里的静态前缀表, 每项为空格分隔的命令词序列. */
@@ -35,6 +42,14 @@ export interface PluginConfig {
     readonly debug: boolean;
     /** 命令记录表的容量上限. */
     readonly pendingCapacity: number;
+    /** night 期间直接拒绝的工具名. */
+    readonly nightBlockedTools: readonly string[];
+    /** 即使出现在被拦名单里也放行的工具名. */
+    readonly nightExemptTools: readonly string[];
+    /** 是否注册 `/night` 斜杠命令, 让命令行也能切换. */
+    readonly nightCommand: boolean;
+    /** 打开 night 时交给 agent 的上下文文本; 空串表示只写状态, 不额外注入. */
+    readonly nightContext: string;
 }
 /**
  * 校验并补齐配置.

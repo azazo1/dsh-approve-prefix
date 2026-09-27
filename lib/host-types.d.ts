@@ -108,6 +108,48 @@ export interface ToolsServiceLike {
     get(name: string, scope?: unknown): ToolDefinitionLike | undefined;
 }
 /**
+ * 一条斜杠命令的定义, 对应 dsh-commands 的 `CommandDefinition`.
+ *
+ * 只取本插件注册 `/night` 用到的字段. `handler` 的入参里带 agent,
+ * 会话状态因此能从调用现场取到, 不需要额外把命令注册到每个 agent 上.
+ */
+export interface CommandDefinitionLike {
+    /** 命令名, 不含前导斜杠. */
+    readonly name: string;
+    /** 发现界面用的一句话说明. */
+    readonly description: string;
+    /** 可选输入提示. */
+    readonly input?: {
+        readonly hint: string;
+    };
+    /** 执行体. */
+    readonly handler: (invocation: CommandInvocationLike) => CommandResultLike | Promise<CommandResultLike>;
+}
+/** 一次斜杠命令调用, 对应 dsh-commands 的 `CommandInvocation`. */
+export interface CommandInvocationLike {
+    /** 命令名之后原样跟的文本, 含分隔空白. */
+    readonly rawInput: string;
+    /** 收到这条命令的 agent. */
+    readonly agent?: unknown;
+}
+/** 命令结果, 对应 dsh-commands 的 `CommandResult`. */
+export type CommandResultLike = {
+    readonly kind: 'success';
+    readonly text?: string;
+} | {
+    readonly kind: 'error';
+    readonly text: string;
+};
+/** commands 服务中本插件用到的方法. */
+export interface CommandsServiceLike {
+    /**
+     * 注册一条命令.
+     * @param definition - 命令定义.
+     * @returns 注销这条命令.
+     */
+    register(definition: CommandDefinitionLike): () => void;
+}
+/**
  * 一次系统提示词组装的上下文, 只取本插件要读的 agent / scope.
  *
  * 对应 dsh-agent 合并进 `AssembleContext` 的字段. 诊断用的裸 assemble 没有 agent.
@@ -178,4 +220,5 @@ export interface InjectedContext extends PluginContext {
     readonly connection?: ConnectionServiceLike;
     readonly tools?: ToolsServiceLike;
     readonly systemPrompt?: SystemPromptLike;
+    readonly commands?: CommandsServiceLike;
 }

@@ -1,5 +1,5 @@
 /**
- * dsh-approve-prefix: 在审批瀑布上按 "单命令前缀" 自动放行沙箱提权请求.
+ * dsh-approve-prefix: 在审批瀑布上按 "单命令前缀" 自动放行沙箱提权请求, 并提供会话级 night 模式.
  *
  * 插件做这些事:
  * 1. 在 `tools/pre-execute` 阶段记下每次工具调用的命令原文, 以 callId 为键;
@@ -9,12 +9,17 @@
  * 3. 在 `system-prompt/assemble` 给发给模型的工具 schema 副本补上 `approved`; 有 tools 服务时
  *    也给全局注册表打补丁, 但 bash 在 agent preset 上时全局 get 看不到, 不能只靠这一条;
  * 4. 有 systemPrompt 服务时, 注册一段系统提示词, 每次组装时列出当前放行前缀, 并简短说明
- *    `approved` 与前缀匹配条件;
- * 5. 有 webServer 与 connection 时挂认证 HTTP, 给会话视图 tab 管理当前会话的临时前缀.
+ *    `approved` 与前缀匹配条件; night 打开时另有一段说明夜里的行为规则;
+ * 5. 有 webServer 与 connection 时挂认证 HTTP, 给会话视图 tab 管理当前会话的临时前缀与 night 开关;
+ * 6. 有 commands 服务时注册 `/night` 命令, 与对话视图 tab 写同一份会话状态.
  *
  * 放行前缀来自三处, 全部由用户显式给出: profile 装配层的静态 `prefixes`, settings 里由配置页
  * 维护的持久前缀, 以及只在当前会话生效的临时前缀. 插件不从审批结果里学任何东西:
  * dsh 的审批接缝只有 `allowed-once` 一个放行结果, 无法区分 "允许一次" 与更长期的授权.
+ *
+ * night 是会话级开关, 只存进程内存: 打开期间交互类工具在 `tools/pre-execute` 最外层被拒,
+ * 只有命中放行前缀的提权会放行, 其余提权直接拒绝而不弹人工卡片. 重启后开关全部归零,
+ * 提示词段随之消失, agent 因此能判断 night 已经结束.
  *
  * 判定失败, 命令取不回或配置非法时都按 "不自动放行" 处理 (fail-closed).
  *
@@ -23,9 +28,19 @@
 
 import { installApprovalAnswerer } from './approval/answerer.js'
 import { installApprovedAssemblyPatch, installApprovedSchemaPatch } from './approval/approved-schema.js'
+import { installInteractiveToolGuard } from './approval/block-interactive.js'
 import { PendingCommands } from './approval/pending-commands.js'
-import { DEFAULT_PREFIXES, DEFAULT_TOOLS, normalizeConfig, presentToolNames } from './config.js'
+import { installNightCommand } from './command/night.js'
+import {
+  DEFAULT_NIGHT_CONTEXT,
+  DEFAULT_PREFIXES,
+  DEFAULT_TOOLS,
+  normalizeConfig,
+  presentToolNames,
+} from './config.js'
 import type { PluginContext } from './host-types.js'
+import { DEFAULT_NIGHT_BLOCKED_TOOLS, DEFAULT_NIGHT_EXEMPT_TOOLS } from './night/blocked.js'
+import { NightStates } from './night/state.js'
 import { PersistentPrefixes } from './prefix/persistent.js'
 import { sessionKeyOf } from './prefix/session-key.js'
 import { TemporaryPrefixes } from './prefix/temporary.js'
@@ -34,6 +49,11 @@ import {
   ALLOW_PREFIX_SECTION_ORDER,
   renderAllowPrefixSection,
 } from './prompt/allow-prefixes.js'
+import {
+  NIGHT_SECTION_NAME,
+  NIGHT_SECTION_ORDER,
+  renderNightSection,
+} from './prompt/night-mode.js'
 import { mountSessionPrefixRoutes } from './session-api/routes.js'
 import type { Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -48,6 +68,10 @@ export interface Config {
   temporaryPrefixLimit: number
   debug: boolean
   pendingCapacity: number
+  nightBlockedTools: string[]
+  nightExemptTools: string[]
+  nightCommand: boolean
+  nightContext: string
   persistentPrefixes: Volatile<PersistentPrefixEntry[]>
 }
 
@@ -60,6 +84,10 @@ interface ConfigInput {
   temporaryPrefixLimit?: number
   debug?: boolean
   pendingCapacity?: number
+  nightBlockedTools?: string[]
+  nightExemptTools?: string[]
+  nightCommand?: boolean
+  nightContext?: string
   persistentPrefixes?: PersistentPrefixEntry[]
 }
 
@@ -72,6 +100,10 @@ export const Config: z<ConfigInput, Config> = z.object({
   temporaryPrefixLimit: z.number().step(1).min(1).default(32),
   debug: z.boolean().default(false),
   pendingCapacity: z.number().step(1).min(1).default(128),
+  nightBlockedTools: z.array(z.string()).default([...DEFAULT_NIGHT_BLOCKED_TOOLS]),
+  nightExemptTools: z.array(z.string()).default([...DEFAULT_NIGHT_EXEMPT_TOOLS]),
+  nightCommand: z.boolean().default(true),
+  nightContext: z.string().default(DEFAULT_NIGHT_CONTEXT),
   persistentPrefixes: z.array(z.object({
     tool: z.string(),
     prefix: z.string(),
@@ -119,6 +151,7 @@ export function apply(ctx: PluginContext, configInput: Config): void {
   const config = normalizeConfig(configInput)
   const pending = new PendingCommands(config.pendingCapacity)
   const temporary = new TemporaryPrefixes(config.temporaryPrefixLimit)
+  const night = new NightStates()
   const persistent = new PersistentPrefixes(() => ({
     persistentPrefixes: configInput.persistentPrefixes.get(),
   }))
@@ -136,7 +169,17 @@ export function apply(ctx: PluginContext, configInput: Config): void {
     return next()
   })
 
-  installApprovalAnswerer(ctx, { config, pending, temporary, persistent: () => persistent })
+  /*
+   * 交互工具拦截注册在命令记录之后: 同一个事件的监听器按注册顺序入栈,
+   * 拦截器命中时不调用 next(), 于是记录与下游 pre-execute 都不会跑, 工具体也不执行.
+   */
+  installInteractiveToolGuard(ctx, {
+    states: night,
+    blocked: config.nightBlockedTools,
+    exempt: config.nightExemptTools,
+  })
+
+  installApprovalAnswerer(ctx, { config, pending, temporary, night, persistent: () => persistent })
   installApprovedAssemblyPatch(ctx, config.tools)
 
   /*
@@ -151,7 +194,7 @@ export function apply(ctx: PluginContext, configInput: Config): void {
 
   /*
    * systemPrompt 同样可选: 没有提示词服务时审批照常, 只是模型看不到当前前缀表.
-   * 文本闭包每次组装都重读持久表和当前会话的临时表.
+   * 文本闭包每次组装都重读持久表, 当前会话的临时表, 以及这个会话的 night 状态.
    */
   ctx.inject(['systemPrompt'], (promptCtx) => {
     const systemPrompt = promptCtx.systemPrompt
@@ -177,7 +220,34 @@ export function apply(ctx: PluginContext, configInput: Config): void {
         })
       },
     })
+    systemPrompt.section({
+      name: NIGHT_SECTION_NAME,
+      order: NIGHT_SECTION_ORDER,
+      interpolate: false,
+      text: (context) => renderNightSection({
+        on: night.isOn(sessionKeyOf(context.agent)),
+        blockedTools: config.nightBlockedTools,
+        exemptTools: config.nightExemptTools,
+        allowedEscalationModes: config.allowedEscalationModes,
+      }),
+    })
   })
+
+  /*
+   * commands 是可选的: 没有命令注册表时对话视图 tab 照样能开关 night, 只是没有 /night.
+   * 注册用 inject 等命令服务就绪, 因为 apply 阶段它可能还没 provide.
+   */
+  if (config.nightCommand) {
+    ctx.inject(['commands'], (commandCtx) => {
+      const registered = installNightCommand(commandCtx, {
+        states: night,
+        contextText: config.nightContext,
+      })
+      if (!registered) {
+        commandCtx.logger.warn('dsh-approve-prefix: commands service is present but has no register(); /night is unavailable')
+      }
+    })
+  }
 
   /*
    * webServer 与 connection 都要等各自的服务就绪: 没有写进 inject 的服务在 apply 阶段读不到.
@@ -195,6 +265,10 @@ export function apply(ctx: PluginContext, configInput: Config): void {
       replace: (sessionKey, entries) => temporary.replace(sessionKey, entries),
       defaultTool: () => presentToolNames(config.tools, toolLookup(webCtx.get('tools')))[0] ?? 'bash',
       limit: config.temporaryPrefixLimit,
+      night: (sessionKey) => night.isOn(sessionKey),
+      setNight: (sessionKey, on) => { night.set(sessionKey, on) },
+      blockedTools: config.nightBlockedTools,
+      exemptTools: config.nightExemptTools,
     })
   })
 }

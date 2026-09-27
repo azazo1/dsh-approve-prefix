@@ -16,6 +16,7 @@
  */
 import type { PluginConfig } from '../config.js';
 import type { PluginContext } from '../host-types.js';
+import type { NightStates } from '../night/state.js';
 import type { PersistentPrefixes } from '../prefix/persistent.js';
 import type { TemporaryPrefixes } from '../prefix/temporary.js';
 import type { PendingCommands } from './pending-commands.js';
@@ -59,6 +60,8 @@ export interface ApprovalAnswererDeps {
     readonly temporary: TemporaryPrefixes;
     /** settings 服务就绪后才有值, 未就绪时按没有持久前缀处理. */
     readonly persistent: () => PersistentPrefixes | undefined;
+    /** 会话级 night 开关表. */
+    readonly night: NightStates;
 }
 /**
  * 把应答器以 `prepend` 方式插到审批瀑布最前面, 抢在人工卡片之前应答.

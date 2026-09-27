@@ -1,6 +1,6 @@
 /**
- * 插件接线测试: 用假 Context 驱动 pre-execute, 审批瀑布与会话前缀 HTTP, 断言放行,
- * 转人工, 持久前缀与会话级临时前缀的各条分支.
+ * 插件接线测试: 用假 Context 驱动 pre-execute, 审批瀑布, 会话前缀 HTTP, night 开关与
+ * `/night` 命令, 断言放行, 转人工, 持久前缀, 会话级临时前缀以及 night 各条分支.
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -9,6 +9,8 @@ import { APPROVED_PARAMETER_DESCRIPTION } from '../src/approval/approved-schema.
 import type {
   ApprovalOutcome,
   ApprovalRequestLike,
+  CommandDefinitionLike,
+  CommandResultLike,
   HttpRequestLike,
   HttpResponseLike,
   InjectedContext,
@@ -21,7 +23,8 @@ import type {
 import { apply } from '../src/index.ts'
 import type { ApprovePrefixSettings, PersistentPrefixEntry } from '../src/prefix/settings.ts'
 import { ALLOW_PREFIX_SECTION_NAME, ALLOW_PREFIX_SECTION_ORDER } from '../src/prompt/allow-prefixes.ts'
-import { prefixesPath } from '../src/session-api/paths.ts'
+import { NIGHT_SECTION_NAME, NIGHT_SECTION_ORDER } from '../src/prompt/night-mode.ts'
+import { nightPath, prefixesPath } from '../src/session-api/paths.ts'
 
 /** 人工拒绝在测试里的占位结果. */
 const HUMAN_REJECT: ApprovalOutcome = 'rejected'
@@ -32,6 +35,10 @@ const FIRST_SESSION = 'session-first'
 const SECOND_SESSION = 'session-second'
 /** 生产默认 prefixes 为空. 需要命中前缀的判定用例必须显式传入. */
 const MATCH_PREFIXES = { prefixes: ['gh api'] }
+/** 默认被 night 拦下的工具, 用来断言名单生效. */
+const INTERACTIVE_TOOL = 'ask_user_question'
+/** 默认免拦的工具, 用来断言免拦名单生效. */
+const EXEMPT_TOOL = 'exit_plan_mode'
 
 /** 假的 settings 存储, 模拟在配置页面里编辑并跨进程保留的配置. */
 interface FakeSettingsStore {
@@ -45,10 +52,23 @@ interface HttpResult {
   body: string
 }
 
+/** night 资源的响应体. */
+interface NightPayload {
+  night: boolean
+  blockedTools: string[]
+  exemptTools: string[]
+}
+
 /** 假 Context 暴露给测试的驱动接口. */
 interface FakeHost {
-  /** 走一次 tools/pre-execute, 让插件记下命令. */
-  preExecute(execution: { callId: string; command: unknown; name?: string; approved?: unknown }): Promise<unknown>
+  /** 走一次 tools/pre-execute, 让插件记下命令; 也可以用来观察 night 的拦截. */
+  preExecute(execution: {
+    callId: string
+    command: unknown
+    name?: string
+    approved?: unknown
+    sessionKey?: string
+  }): Promise<unknown>
   /** 走一次 approval/request; humanOutcome 表示下游应答者给出的结果. */
   approve(request: ApprovalRequestLike, humanOutcome?: ApprovalOutcome): Promise<ApprovalOutcome>
   /** 走一次已注册的 HTTP 路由. */
@@ -67,11 +87,20 @@ interface FakeHost {
   assemble(assembly: PromptAssemblyLike): Promise<PromptAssemblyLike>
   /** 插件注册的系统提示词段. */
   sections: PromptSectionLike[]
+  /** 插件注册的斜杠命令, 按名取. */
+  command(name: string): CommandDefinitionLike | undefined
+  /** 走一次斜杠命令. */
+  runCommand(name: string, rawInput: string, sessionKey?: string): CommandResultLike | undefined
+  /** 某个 agent 收到的 followup 上下文. */
+  followups: string[]
+  /** 这些 followup 消息的 id, 用来确认确实是带身份的标准 user 消息. */
+  messageIds: string[]
 }
 
 interface CreateHostOptions {
   webServer?: boolean
   connection?: boolean
+  commands?: boolean
 }
 
 /** 用最小结构实现 Context, 记录监听器与路由, 并在测试里手动触发. */
@@ -91,9 +120,13 @@ function createHost(
   const routes: WebServerRouteLike[] = []
   const logs: string[] = []
   const prepended: boolean[] = []
+  const followups: string[] = []
+  const messageIds: string[] = []
+  const commands = new Map<string, CommandDefinitionLike>()
   let rejection: 401 | 403 | undefined
   let connectionPresent = options.connection !== false
   const webEnabled = options.webServer !== false
+  const commandsEnabled = options.commands !== false
   const sections: PromptSectionLike[] = []
   const toolRegistry = new Map<string, ToolDefinitionLike>([
     ['bash', { parameters: { type: 'object', properties: { command: { type: 'string' }, description: { type: 'string' } }, required: ['command', 'description'] } }],
@@ -111,6 +144,7 @@ function createHost(
     get(name: string): unknown {
       if (name === 'connection') return connectionPresent ? connectionHandle : undefined
       if (name === 'tools') return ctx.tools
+      if (name === 'commands') return ctx.commands
       return undefined
     },
     tools: {
@@ -124,6 +158,14 @@ function createHost(
         return () => {}
       },
     },
+    commands: commandsEnabled
+      ? {
+        register(definition: CommandDefinitionLike): () => void {
+          commands.set(definition.name, definition)
+          return () => {}
+        },
+      }
+      : undefined,
     webServer: webEnabled
       ? {
         register(route: WebServerRouteLike): unknown {
@@ -133,6 +175,7 @@ function createHost(
       }
       : undefined,
     on(event: string, listener: unknown, options?: { prepend?: boolean }): unknown {
+      /* 与 cordis 一致: 先注册的先跑, 于是插件内部的注册次序就是优先级. */
       if (event === 'tools/pre-execute') preExecuteListeners.push(listener as never)
       if (event === 'tools/change') changeListeners.push(listener as () => void)
       if (event === 'system-prompt/assemble') assembleListeners.push(listener as never)
@@ -146,7 +189,7 @@ function createHost(
       const ready = dependencies.every((dep) => {
         if (dep === 'webServer') return webEnabled
         if (dep === 'connection') return connectionPresent
-        if (dep === 'tools') return true
+        if (dep === 'commands') return commandsEnabled
         return true
       })
       if (!ready) return undefined
@@ -176,8 +219,18 @@ function createHost(
   return {
     logs,
     sections,
+    followups,
+    messageIds,
     toolParameters(name) {
       return toolRegistry.get(name)?.parameters
+    },
+    command(name) {
+      return commands.get(name)
+    },
+    runCommand(name, rawInput, sessionKey = FIRST_SESSION) {
+      const definition = commands.get(name)
+      if (definition === undefined) return undefined
+      return definition.handler({ rawInput, agent: agentOf(sessionKey, followups, messageIds) })
     },
     replaceTool(name, parameters) {
       toolRegistry.set(name, { parameters })
@@ -195,16 +248,20 @@ function createHost(
     async preExecute(execution) {
       const argumentsValue: Record<string, unknown> = { command: execution.command, description: 'test call' }
       if ('approved' in execution) argumentsValue['approved'] = execution.approved
-      const value: ToolExecutionLike = {
+      const value: ToolExecutionLike & { agent?: unknown } = {
         name: execution.name ?? 'bash',
         callId: execution.callId,
         arguments: argumentsValue,
+        agent: agentOf(execution.sessionKey ?? FIRST_SESSION, followups, messageIds),
       }
-      for (const listener of preExecuteListeners) {
-        const result = await listener(value, async () => 'allow')
-        if (result !== undefined) return result
+      /* 与 cordis 的 waterfall 一致: 先注册的监听器先跑, 不调用 next() 就结束整条链. */
+      let index = 0
+      const next = async (): Promise<unknown> => {
+        const listener = preExecuteListeners[index]
+        index += 1
+        return listener === undefined ? { kind: 'allow' } : listener(value, next)
       }
-      return undefined
+      return next()
     },
     async approve(request, humanOutcome = HUMAN_REJECT) {
       let index = 0
@@ -271,13 +328,36 @@ function payloadOf(result: HttpResult): { entries: PersistentPrefixEntry[]; defa
   return JSON.parse(result.body) as { entries: PersistentPrefixEntry[]; defaultTool: string; limit: number }
 }
 
+function nightPayloadOf(result: HttpResult): NightPayload {
+  return JSON.parse(result.body) as NightPayload
+}
+
+/**
+ * 造一个假 agent 视图.
+ *
+ * 带上 `followup`, 这样 `/night` 打开时的上下文注入也能被观察到; 真实宿主里它是 agent 上的
+ * 一个方法, 入参是标准 user 消息.
+ * @param sessionKey - 会话 id.
+ * @param followups - 收到上下文文本时追加到这里.
+ * @returns agent 视图.
+ */
+function agentOf(sessionKey: string, followups: string[] = [], messageIds: string[] = []): unknown {
+  return {
+    session: { id: sessionKey },
+    followup(message: { id: string, content: readonly { type: string, text?: string }[] }): void {
+      messageIds.push(message.id)
+      followups.push(message.content.map(block => block.text ?? '').join(''))
+    },
+  }
+}
+
 /** 构造一次沙箱提权审批请求. */
 function escalation(callId: string, mode = 'danger-full-access', sessionKey: string = FIRST_SESSION): ApprovalRequestLike {
   return {
     toolName: 'bash',
     callId,
     reason: `escalate sandbox to ${mode}: the command needs host credentials`,
-    agent: { session: { id: sessionKey } },
+    agent: agentOf(sessionKey),
   }
 }
 
@@ -573,17 +653,29 @@ describe('系统提示词', () => {
     return section.text(sessionKey === undefined ? {} : { agent: { session: { id: sessionKey } } })
   }
 
+  function sectionOf(sections: readonly PromptSectionLike[], name: string): PromptSectionLike {
+    const found = sections.find(section => section.name === name)
+    if (found === undefined) throw new Error(`missing prompt section ${name}`)
+    return found
+  }
+
+  test('注册放行前缀段与 night 段, 次序固定', () => {
+    const host = createHost()
+    const prefix = sectionOf(host.sections, ALLOW_PREFIX_SECTION_NAME)
+    expect(prefix.order).toBe(ALLOW_PREFIX_SECTION_ORDER)
+    expect(prefix.interpolate).toBe(false)
+    const night = sectionOf(host.sections, NIGHT_SECTION_NAME)
+    expect(night.order).toBe(NIGHT_SECTION_ORDER)
+    expect(night.interpolate).toBe(false)
+    expect(night.order).toBeGreaterThan(prefix.order)
+  })
+
   test('列出静态, 持久和当前会话临时前缀, 并说明 approved', async () => {
     const store: FakeSettingsStore = {
       persistentPrefixes: [{ tool: 'bash', prefix: 'git status' }],
     }
     const host = createHost({ prefixes: ['gh api'], tools: ['bash', 'pwsh'] }, store)
-    expect(host.sections).toHaveLength(1)
-    const section = host.sections[0]
-    expect(section?.name).toBe(ALLOW_PREFIX_SECTION_NAME)
-    expect(section?.order).toBe(ALLOW_PREFIX_SECTION_ORDER)
-    expect(section?.interpolate).toBe(false)
-    if (section === undefined) return
+    const section = sectionOf(host.sections, ALLOW_PREFIX_SECTION_NAME)
 
     const first = render(section, FIRST_SESSION)
     expect(first).toContain('`gh api`')
@@ -609,15 +701,216 @@ describe('系统提示词', () => {
 
   test('提示词不列出注册表里没有的工具', () => {
     const host = createHost({ tools: ['bash', 'missing'] })
-    const section = host.sections[0]
-    expect(section).toBeDefined()
-    if (section === undefined || typeof section.text !== 'function') return
+    const section = sectionOf(host.sections, ALLOW_PREFIX_SECTION_NAME)
+    if (typeof section.text !== 'function') throw new Error('the prefix section must be computed per assembly')
     const text = section.text({ agent: { session: { id: FIRST_SESSION } } })
     expect(text).toContain('- bash:')
     expect(text).toContain('- none')
     expect(text).not.toContain('missing')
     expect(text).not.toContain('gh api')
     expect(text).not.toContain('/usr/bin/gh')
+  })
+
+  test('night 段只在开关打开时非空, 并列出被拦与免拦名单', async () => {
+    const host = createHost({ allowedEscalationModes: ['danger-full-access'] })
+    const night = sectionOf(host.sections, NIGHT_SECTION_NAME)
+    expect(render(night, FIRST_SESSION)).toBe('')
+
+    const put = await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    expect(put.status).toBe(200)
+    const text = render(night, FIRST_SESSION)
+    expect(text).toContain('Night mode')
+    expect(text).toContain(INTERACTIVE_TOOL)
+    expect(text).not.toContain(EXEMPT_TOOL)
+    expect(text).toContain('danger-full-access')
+    expect(text).toContain('disappears when the harness restarts')
+    expect(render(night, SECOND_SESSION)).toBe('')
+    expect(render(night)).toBe('')
+  })
+})
+
+describe('night 开关', () => {
+  test('默认关闭, 并且按会话隔离', async () => {
+    const host = createHost()
+    expect(nightPayloadOf(await host.request('GET', nightPath(FIRST_SESSION))).night).toBe(false)
+    const put = await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    expect(put.status).toBe(200)
+    expect(nightPayloadOf(put).night).toBe(true)
+    expect(nightPayloadOf(await host.request('GET', nightPath(FIRST_SESSION))).night).toBe(true)
+    expect(nightPayloadOf(await host.request('GET', nightPath(SECOND_SESSION))).night).toBe(false)
+  })
+
+  test('响应体带上当前被拦与免拦名单', async () => {
+    const host = createHost()
+    const payload = nightPayloadOf(await host.request('GET', nightPath(FIRST_SESSION)))
+    expect(payload.blockedTools).toEqual([INTERACTIVE_TOOL])
+    expect(payload.exemptTools).toEqual([EXEMPT_TOOL])
+
+    const custom = createHost({ nightBlockedTools: ['a', 'b'], nightExemptTools: ['b'] })
+    const customPayload = nightPayloadOf(await custom.request('GET', nightPath(FIRST_SESSION)))
+    expect(customPayload.blockedTools).toEqual(['a'])
+    expect(customPayload.exemptTools).toEqual(['b'])
+  })
+
+  test('只接受布尔值, 鉴权与 connection 缺席都 fail-closed', async () => {
+    const host = createHost()
+    expect((await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: 'on' } })).status).toBe(400)
+    expect((await host.request('PUT', nightPath(FIRST_SESSION), { body: {} })).status).toBe(400)
+    host.setRejection(401)
+    expect((await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })).status).toBe(401)
+    host.setRejection(undefined)
+    expect(nightPayloadOf(await host.request('GET', nightPath(FIRST_SESSION))).night).toBe(false)
+    host.setConnectionPresent(false)
+    expect((await host.request('GET', nightPath(FIRST_SESSION))).status).toBe(503)
+  })
+
+  test('陌生的会话资源路径是 404', async () => {
+    const host = createHost()
+    expect((await host.request('GET', '/api/plugins/dsh-approve-prefix/sessions/session-first/unknown')).status).toBe(404)
+    expect((await host.request('GET', '/api/plugins/dsh-approve-prefix/sessions/bad id/night')).status).toBe(404)
+  })
+
+  test('重启后全部归零', async () => {
+    const store: FakeSettingsStore = { persistentPrefixes: [] }
+    const first = createHost(undefined, store)
+    await first.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    expect(nightPayloadOf(await first.request('GET', nightPath(FIRST_SESSION))).night).toBe(true)
+
+    const restarted = createHost(undefined, store)
+    expect(nightPayloadOf(await restarted.request('GET', nightPath(FIRST_SESSION))).night).toBe(false)
+    expect(await restarted.preExecute({ callId: 'call-1', command: 'gh api user', name: INTERACTIVE_TOOL })).toEqual({ kind: 'allow' })
+  })
+})
+
+describe('/night 命令', () => {
+  test('裸调用取反, on / off 写明确值', () => {
+    const host = createHost()
+    expect(host.command('night')).toBeDefined()
+    expect(host.runCommand('night', '')).toEqual({ kind: 'success', text: 'Night mode on: interactive tools are rejected and only prefix-matched escalations are approved.' })
+    expect(host.followups).toHaveLength(1)
+    expect(host.followups[0]).toContain('night mode')
+    expect(host.messageIds[0]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    expect(host.runCommand('night', '')?.kind).toBe('success')
+    expect(host.followups).toHaveLength(1)
+    expect(host.runCommand('night', 'on')?.kind).toBe('success')
+    expect(host.runCommand('night', 'off')?.kind).toBe('success')
+    expect(host.runCommand('night', '  ' )?.kind).toBe('success')
+    expect(host.runCommand('night', 'maybe')?.kind).toBe('error')
+  })
+
+  test('命令与 HTTP 读的是同一份状态', async () => {
+    const host = createHost()
+    host.runCommand('night', 'on')
+    expect(nightPayloadOf(await host.request('GET', nightPath(FIRST_SESSION))).night).toBe(true)
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: false } })
+    expect(nightPayloadOf(await host.request('GET', nightPath(FIRST_SESSION))).night).toBe(false)
+    expect(host.runCommand('night', 'off')).toEqual({ kind: 'success', text: 'Night mode is already off for this session.' })
+  })
+
+  test('命令只影响自己的会话', async () => {
+    const host = createHost()
+    host.runCommand('night', 'on', FIRST_SESSION)
+    expect(nightPayloadOf(await host.request('GET', nightPath(SECOND_SESSION))).night).toBe(false)
+    expect(host.runCommand('night', 'off', SECOND_SESSION)).toEqual({ kind: 'success', text: 'Night mode is already off for this session.' })
+  })
+
+  test('没有 commands 服务时不注册命令, 其余照常', async () => {
+    const host = createHost(undefined, { persistentPrefixes: [] }, { commands: false })
+    expect(host.command('night')).toBeUndefined()
+    expect(nightPayloadOf(await host.request('GET', nightPath(FIRST_SESSION))).night).toBe(false)
+  })
+
+  test('nightCommand 为 false 时不注册', () => {
+    expect(createHost({ nightCommand: false }).command('night')).toBeUndefined()
+  })
+
+  test('nightContext 为空时不注入上下文', () => {
+    const host = createHost({ nightContext: '' })
+    host.runCommand('night', 'on')
+    expect(host.followups).toEqual([])
+  })
+})
+
+describe('night 期间的交互工具拦截', () => {
+  test('被拦工具在 night 打开后被拒, 并带上自主决断的指示', async () => {
+    const host = createHost()
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    const denied = await host.preExecute({ callId: 'call-1', command: 'asking', name: INTERACTIVE_TOOL })
+    expect(denied).toMatchObject({ kind: 'deny' })
+    expect((denied as { reason: string }).reason).toContain(INTERACTIVE_TOOL)
+    expect((denied as { reason: string }).reason).toContain('Night mode is on')
+  })
+
+  test('免拦名单里的工具照常放行', async () => {
+    const host = createHost()
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    expect(await host.preExecute({ callId: 'call-1', command: 'plan', name: EXEMPT_TOOL })).toEqual({ kind: 'allow' })
+  })
+
+  test('没有打开 night 时不拦', async () => {
+    const host = createHost()
+    expect(await host.preExecute({ callId: 'call-1', command: 'asking', name: INTERACTIVE_TOOL })).toEqual({ kind: 'allow' })
+  })
+
+  test('只拦被拦名单里的工具', async () => {
+    const host = createHost({ nightBlockedTools: ['only-this'] })
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    expect(await host.preExecute({ callId: 'call-1', command: 'x', name: INTERACTIVE_TOOL })).toEqual({ kind: 'allow' })
+    expect(await host.preExecute({ callId: 'call-2', command: 'x', name: 'only-this' })).toMatchObject({ kind: 'deny' })
+  })
+
+  test('别开了 night 的会话不影响本会话', async () => {
+    const host = createHost()
+    await host.request('PUT', nightPath(SECOND_SESSION), { body: { night: true } })
+    expect(await host.preExecute({ callId: 'call-1', command: 'asking', name: INTERACTIVE_TOOL, sessionKey: FIRST_SESSION })).toEqual({ kind: 'allow' })
+    expect(await host.preExecute({ callId: 'call-2', command: 'asking', name: INTERACTIVE_TOOL, sessionKey: SECOND_SESSION })).toMatchObject({ kind: 'deny' })
+  })
+})
+
+describe('night 期间的提权审批', () => {
+  test('前缀未命中的提权直接拒绝, 不转人工', async () => {
+    const host = createHost({ prefixes: [] })
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    await host.preExecute({ callId: 'call-1', command: 'rm -rf /' })
+    expect(await host.approve(escalation('call-1'), HUMAN_ALLOW)).toBe('rejected')
+    expect(host.logs.join('\n')).toContain('rejected by night mode')
+  })
+
+  test('前缀命中的提权仍然自动放行', async () => {
+    const host = createHost(MATCH_PREFIXES)
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    await host.preExecute({ callId: 'call-1', command: 'gh api user' })
+    expect(await host.approve(escalation('call-1'), HUMAN_REJECT)).toBe(HUMAN_ALLOW)
+  })
+
+  test('没有命令记录时也直接拒绝', async () => {
+    const host = createHost()
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    expect(await host.approve(escalation('call-unknown'), HUMAN_ALLOW)).toBe('rejected')
+  })
+
+  test('关掉 night 后回到人工卡片', async () => {
+    const host = createHost({ prefixes: [] })
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    await host.preExecute({ callId: 'call-1', command: 'rm -rf /' })
+    expect(await host.approve(escalation('call-1'), HUMAN_ALLOW)).toBe('rejected')
+
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: false } })
+    await host.preExecute({ callId: 'call-2', command: 'rm -rf /' })
+    expect(await host.approve(escalation('call-2'), HUMAN_ALLOW)).toBe(HUMAN_ALLOW)
+
+    host.runCommand('night', 'on')
+    await host.preExecute({ callId: 'call-3', command: 'rm -rf /' })
+    expect(await host.approve(escalation('call-3'), HUMAN_ALLOW)).toBe('rejected')
+  })
+
+  test('night 只影响自己的会话', async () => {
+    const host = createHost({ prefixes: [] })
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    await host.preExecute({ callId: 'call-1', command: 'rm -rf /' })
+    expect(await host.approve(escalation('call-1', 'danger-full-access', FIRST_SESSION), HUMAN_ALLOW)).toBe('rejected')
+    await host.preExecute({ callId: 'call-2', command: 'rm -rf /' })
+    expect(await host.approve(escalation('call-2', 'danger-full-access', SECOND_SESSION), HUMAN_ALLOW)).toBe(HUMAN_ALLOW)
   })
 })
 

@@ -17,6 +17,7 @@
 
 import type { PluginConfig } from '../config.js'
 import type { ApprovalOutcome, ApprovalRequestLike, PluginContext } from '../host-types.js'
+import type { NightStates } from '../night/state.js'
 import { judgeSingleCommandPrefix } from '../prefix/judge.js'
 import type { PersistentPrefixes } from '../prefix/persistent.js'
 import { sessionKeyOf } from '../prefix/session-key.js'
@@ -95,6 +96,18 @@ export interface ApprovalAnswererDeps {
   readonly temporary: TemporaryPrefixes
   /** settings 服务就绪后才有值, 未就绪时按没有持久前缀处理. */
   readonly persistent: () => PersistentPrefixes | undefined
+  /** 会话级 night 开关表. */
+  readonly night: NightStates
+}
+
+/**
+ * 取这个会话此刻的 night 状态.
+ * @param states - 会话级 night 开关表.
+ * @param agent - 审批请求携带的 agent.
+ * @returns 这个会话此刻是否处于 night; 取不到会话时为 false.
+ */
+function nightOn(states: NightStates, agent: unknown): boolean {
+  return states.isOn(sessionKeyOf(agent))
 }
 
 /**
@@ -129,19 +142,26 @@ export function installApprovalAnswerer(ctx: PluginContext, deps: ApprovalAnswer
       config,
       toolName: request.toolName,
     })
+    const night = nightOn(deps.night, request.agent)
+    const subject = command === undefined ? '(no remembered command)' : shortenCommand(command)
 
     if (!decision.autoApprove) {
-      const subject = command === undefined ? '(no remembered command)' : shortenCommand(command)
+      // 前缀未命中且模型自称命中: 直接拒绝, 不走人工.
       if (pending?.selfApproved === true && decision.skip === 'prefix') {
         ctx.logger.info(`dsh-approve-prefix: rejected a self-approved ${request.toolName} call: ${decision.detail}; command: ${subject}`)
+        return 'rejected'
+      }
+      // night 期间人工不在: 只有命中放行前缀的提权才放行, 其余一律立刻拒绝, 不弹卡片.
+      if (night) {
+        ctx.logger.info(`dsh-approve-prefix: rejected by night mode a ${request.toolName} approval: ${decision.detail}; command: ${subject}`)
         return 'rejected'
       }
       debug(`dsh-approve-prefix: delegating a ${request.toolName} approval: ${decision.detail}; command: ${subject}`)
       return next()
     }
 
-    const subject = escalationMode === undefined ? 'an approval ask' : `a sandbox escalation to ${escalationMode}`
-    ctx.logger.info(`dsh-approve-prefix: auto-approved ${subject}: ${decision.detail}; command: ${shortenCommand(command ?? '')}`)
+    const described = escalationMode === undefined ? 'an approval ask' : `a sandbox escalation to ${escalationMode}`
+    ctx.logger.info(`dsh-approve-prefix: auto-approved ${described}: ${decision.detail}; command: ${shortenCommand(command ?? '')}`)
     return 'allowed-once'
   }, { prepend: true })
 }
