@@ -89,9 +89,21 @@ describe('judgeSingleCommandPrefix', () => {
   })
 
   test('判定说明包含可排查的信息', () => {
-    expect(judgeSingleCommandPrefix('gh api user | jq .', PREFIXES).detail).toContain('"|"')
+    expect(judgeSingleCommandPrefix('gh api user | jq .', PREFIXES).allowed).toBe(false)
     expect(judgeSingleCommandPrefix('gh api user', PREFIXES).detail).toContain('gh api')
     expect(judgeSingleCommandPrefix('ENVA=aaa gh api user', PREFIXES).detail).toContain('environment assignments')
+  })
+
+  test('反斜杠续行仍是单命令, 转义引号加换行则拒绝', () => {
+    expect(allowed('gh api user \\\n --jq .login')).toBe(true)
+    expect(allowed('gh api user \\"\ntrue \\"')).toBe(false)
+    expect(allowed("gh api user \\'\ntrue \\'")).toBe(false)
+  })
+
+  test('引号内的管道与美元符视为参数, 未加引号的展开拒绝', () => {
+    expect(allowed("gh api -f body='a|b'")).toBe(true)
+    expect(allowed("gh api -f query='query($x: Int) { x }'")).toBe(true)
+    expect(allowed('gh api "$HOME"')).toBe(false)
   })
 })
 

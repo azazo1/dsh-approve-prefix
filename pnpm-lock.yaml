@@ -112,6 +112,9 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: ~3.18.4
         version: 3.18.4
+      unbash:
+        specifier: 4.0.11
+        version: 4.0.11
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: 4.0.4
@@ -156,6 +159,10 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
 
+  unbash@4.0.11:
+    resolution: {integrity: sha512-FoSOKV7NEofQSkAefMVHam4ZPKYMxjAydxiV72UFEDNV/YofxjGfiZ2A9pZjdL/lRJzTjcu4PABo1JYJX8N5iQ==}
+    engines: {node: '>=14'}
+
 snapshots:
 
   '@deepseek-ai/cordis@4.0.4':
@@ -177,3 +184,5 @@ snapshots:
   '@standard-schema/spec@1.1.0': {}
 
   typescript@5.9.3: {}
+
+  unbash@4.0.11: {}

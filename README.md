@@ -21,7 +21,7 @@
 1. 审批请求来自 `tools` 中配置的工具 (默认 `bash`).
 2. 请求是沙箱提权, 且目标档位在 `allowedEscalationModes` 内 (默认只允许 `danger-full-access`).
 3. 命令由 `tools/pre-execute` 记录过, 并能按 `callId` 取回 (每条记录只消费一次).
-4. 命令不含结构元字符: `|`, `&`, `;`, `<`, `>`, 反引号, `$` 按整串扫描; 换行与回车只在引号外拒绝, 引号内视为参数内容.
+4. 命令经 unbash 解析后是恰好一条简单命令: 没有管道, 链式, 子 shell, 后台, 重定向, 也没有参数 / 命令 / 算术 / 进程替换这类词展开. 引号内的换行, `$`, `|` 只是参数内容; 反斜杠续行会拼成同一条命令.
 5. 去掉命令行前缀形式的环境变量赋值 (以及 `env` 包装) 后, argv 逐 token 命中某条放行前缀 (默认 `gh api`).
 
 任一条不满足时默认交给下一个应答者 (人工卡片). 例外: 第 4 或第 5 条未通过 (命令不是可放行的单命令前缀), 且工具参数里的 `approved` 严格等于布尔 `true`, 则直接返回 `rejected`, 不再弹卡片. 没写该字段, 写了 `"true"` / `1` 之类, 或失败原因是档位 / 没有记下命令, 仍转人工.
@@ -32,6 +32,8 @@
 |---|---|
 | `gh api user --jq .login` | 自动放行 |
 | `gh api -f body='hello<换行>world'` | 自动放行 (引号内换行仍是单命令) |
+| `gh api user \\<换行> --jq .login` | 自动放行 (反斜杠续行) |
+| `gh api -f query='query($x: Int)'` | 自动放行 (单引号内的 `$` 是字面量) |
 | `ENVA=aaa gh api user` | 自动放行 (环境变量前缀被忽略) |
 | `env ENVA=aaa gh api user` | 自动放行 |
 | `/usr/local/bin/gh api repos/{owner}/{repo}` | 自动放行 (命令词取文件名部分) |
@@ -40,6 +42,7 @@
 | `gh api user && gh auth status` | 人工 |
 | `gh api user > /tmp/out.json` | 人工 |
 | `gh api $(echo user)` | 人工 |
+| `gh api user \\"<换行>true \\"` | 人工 (bash 会另起命令) |
 | `env -i gh api user` | 人工 (`env` 带选项, 不做归约) |
 | `ENVA=aaa` | 人工 (只有赋值, 没有命令) |
 | `gh auth status` | 人工 |
@@ -123,7 +126,7 @@ web 与 desktop 两个 profile 跑的是同一套 Web 应用, 桌面端只是多
 | `prefixes` | `['gh api']` | 静态放行前缀表, 每项是空格分隔的命令词序列; 置空表示什么都不自动放行 |
 | `tools` | `['bash']` | 参与记录与判定的工具名 |
 | `allowedEscalationModes` | `['danger-full-access']` | 允许自动放行的提权目标档位 |
-| `extraDeniedCharacters` | `[]` | 在结构元字符之外额外拒绝的单字符 |
+| `extraDeniedCharacters` | `[]` | 在 AST 判定之外额外拒绝的单字符, 对命令原文整串扫描 |
 | `onlyEscalations` | `true` | 为 false 时, 非提权来源的审批请求也按同一套命令规则应答 |
 | `temporaryPrefixLimit` | `32` | 每个会话的临时前缀条数上限 |
 | `debug` | `false` | 输出每次转人工的判定细节 |
@@ -135,7 +138,7 @@ web 与 desktop 两个 profile 跑的是同一套 Web 应用, 桌面端只是多
 
 - fail-closed: 判定器拿不到命令, 配置非法时转人工, 不会变成放行. 前缀不符默认也转人工; 只有模型同时写了布尔 `approved: true` 才改为直接拒绝.
 - 一次性: 同一个 `callId` 的记录只消费一次, 重复请求转人工.
-- 结构元字符固定拒绝, 不能通过配置取消, 避免把 "单命令" 判定配成可绕过.
+- 单命令结构由 AST 白名单固定, 不能通过配置取消管道 / 重定向 / 命令替换等检查, 避免把判定配成可绕过.
 - 审批结果不参与学习, 所以一次 "允许一次" 不会改变后续判定.
 - Host 半边不写 settings: 持久前缀只在你于配置页保存或手工编辑 settings 时变化.
 - 已放行的调用仍受 dsh 自身的文件沙箱与审批审计约束: 会话日志里的 `approval/asked` 与 `approval/decided` 会记录本次询问与结果, 插件另在 info 级别打印判定依据.

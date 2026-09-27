@@ -1,26 +1,28 @@
 /**
  * 单命令前缀判定: 判断一条 shell 命令是否属于 "单条简单命令, 且 argv 前缀命中白名单".
  *
- * 判定分两层. 第一层是结构元字符扫描: 管道, 链式, 重定向, 命令替换按整串命中即拒;
- * 换行与回车只在引号外拒绝, 引号内视为参数内容. 第二层按引号规则分词, 去掉命令行
- * 前缀形式的环境变量赋值 (以及 `env` 包装), 再做 argv 前缀匹配. 两层都通过才返回 allowed.
+ * 判定用 unbash 解析成 AST, 再按白名单检查: 必须恰好一条简单命令, 不能有管道,
+ * 链式, 子 shell, 后台, 重定向, 以及会改写或执行其它命令的词展开. 通过后再去掉
+ * 命令行前缀形式的环境变量赋值 (以及 `env` 包装), 做 argv 前缀匹配.
  *
  * 本模块只做命令解析, 不涉及任何策略或状态.
  *
  * @module dsh-approve-prefix/prefix/judge
  */
 
-/**
- * 结构元字符: 固定拒绝, 不随配置放宽.
- *
- * 这些字符能组成第二条命令, 重定向输出或做命令替换, 属于 "一条命令" 判定的前提,
- * 因此不允许通过配置移除; 需要更严的限制用 extraDeniedCharacters 追加.
- * 换行与回车不在此列: 它们只在引号外构成第二条命令, 由 findUnquotedLineBreak 单独处理.
- */
-export const STRUCTURAL_METACHARACTERS: readonly string[] = ['|', '&', ';', '<', '>', '`', '$']
+import { parse, type Word, type WordPart } from 'unbash'
 
 /** 命令行前缀形式的赋值, 例如 `ENVA=aaa`. */
 const ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=[\s\S]*$/
+
+/** 会改写参数或另起命令的词展开, 一律拒绝. */
+const UNSAFE_WORD_PARTS = new Set([
+  'SimpleExpansion',
+  'ParameterExpansion',
+  'CommandExpansion',
+  'ArithmeticExpansion',
+  'ProcessSubstitution',
+])
 
 /** 一条命令的判定结果. */
 export interface PrefixVerdict {
@@ -42,7 +44,7 @@ export interface CommandInspection {
   readonly detail: string
 }
 
-/** 把元字符渲染成日志里可读的名字. */
+/** 把额外拒绝字符渲染成日志里可读的名字. */
 function describeCharacter(character: string): string {
   switch (character) {
     case '\n': return 'a newline'
@@ -52,76 +54,62 @@ function describeCharacter(character: string): string {
   }
 }
 
-/**
- * 找出第一个未加引号的换行或回车.
- *
- * 引号内的换行只是参数内容, 不拆命令; 引号外的换行等价于另起一条命令.
- * @param text - 已 trim 的命令文本.
- * @returns 命中的字符, 没有则 undefined.
- */
-function findUnquotedLineBreak(text: string): '\n' | '\r' | undefined {
-  let quote: '"' | "'" | undefined
-  for (const character of text) {
-    if (quote !== undefined) {
-      if (character === quote) quote = undefined
-      continue
-    }
-    if (character === '"' || character === "'") {
-      quote = character
-      continue
-    }
-    if (character === '\n' || character === '\r') return character
+/** 把 AST 节点类型写成判定说明. */
+function describeNodeType(type: string): string {
+  switch (type) {
+    case 'Pipeline': return 'a pipeline'
+    case 'AndOr': return 'an and-or list'
+    case 'Subshell': return 'a subshell'
+    case 'BraceGroup': return 'a brace group'
+    case 'CommandExpansion': return 'a command substitution'
+    case 'ProcessSubstitution': return 'a process substitution'
+    case 'ArithmeticExpansion': return 'an arithmetic expansion'
+    case 'SimpleExpansion':
+    case 'ParameterExpansion': return 'a parameter expansion'
+    default: return type
   }
-  return undefined
 }
 
-/**
- * 按引号规则把命令切成 argv, 引号本身不进入 token.
- *
- * 未闭合的引号, 以及引号外的换行 / 回车, 都返回 undefined, 由调用方按拒绝处理.
- * @param text - 已 trim 的命令文本.
- * @returns token 数组, 或 undefined 表示引号不闭合或含未加引号的换行.
- */
-export function tokenizeCommand(text: string): string[] | undefined {
-  const tokens: string[] = []
-  let current = ''
-  let started = false
-  let quote: '"' | "'" | undefined
-  for (const character of text) {
-    if (quote !== undefined) {
-      if (character === quote) {
-        quote = undefined
-        continue
-      }
-      current += character
-      continue
-    }
-    if (character === '"' || character === "'") {
-      quote = character
-      started = true
-      continue
-    }
-    if (character === '\n' || character === '\r') return undefined
-    if (character === ' ' || character === '\t') {
-      if (started) {
-        tokens.push(current)
-        current = ''
-        started = false
-      }
-      continue
-    }
-    current += character
-    started = true
-  }
-  if (quote !== undefined) return undefined
-  if (started) tokens.push(current)
-  return tokens
+function fail(detail: string): CommandInspection {
+  return { ok: false, tokens: [], strippedEnvironment: false, detail }
 }
 
 /** 取命令词的文件名部分, 让 `/usr/bin/gh` 与 `gh` 等价. */
 function commandWord(token: string): string {
   const slash = token.lastIndexOf('/')
   return slash === -1 ? token : token.slice(slash + 1)
+}
+
+/**
+ * 递归检查词展开. 单引号, ANSI-C 引号和字面量视为数据; 双引号内若再出现
+ * 参数 / 命令 / 算术 / 进程替换则拒绝.
+ */
+function inspectPart(part: WordPart): string | undefined {
+  if (UNSAFE_WORD_PARTS.has(part.type)) return part.type
+  if (part.type === 'DoubleQuoted' || part.type === 'LocaleString') {
+    for (const child of part.parts) {
+      const hit = inspectPart(child)
+      if (hit !== undefined) return hit
+    }
+    return undefined
+  }
+  if (part.type === 'ExtendedGlob' || part.type === 'BraceExpansion') {
+    for (const child of part.parts ?? []) {
+      const hit = inspectPart(child)
+      if (hit !== undefined) return hit
+    }
+  }
+  return undefined
+}
+
+/** 检查一个 Word 的 parts. */
+function inspectWord(word: Word | undefined): string | undefined {
+  if (word === undefined) return undefined
+  for (const part of word.parts ?? []) {
+    const hit = inspectPart(part)
+    if (hit !== undefined) return hit
+  }
+  return undefined
 }
 
 /**
@@ -149,47 +137,62 @@ function stripEnvironmentPrefixes(tokens: readonly string[]): string[] | undefin
 /**
  * 检查一条命令是否是单条简单命令, 通过时给出归约后的命令 token.
  * @param command - 模型给出的完整命令文本.
- * @param extraDeniedCharacters - 额外拒绝的单字符, 与结构元字符一起参与扫描.
+ * @param extraDeniedCharacters - 额外拒绝的单字符, 对命令原文做整串扫描.
  * @returns 检查结果.
  */
 export function inspectSingleCommand(command: string, extraDeniedCharacters: readonly string[] = []): CommandInspection {
   const text = command.trim()
-  if (text === '') return { ok: false, tokens: [], strippedEnvironment: false, detail: 'the command is empty' }
-  for (const character of [...STRUCTURAL_METACHARACTERS, ...extraDeniedCharacters]) {
+  if (text === '') return fail('the command is empty')
+  for (const character of extraDeniedCharacters) {
     if (character === '') continue
     if (text.includes(character)) {
-      return {
-        ok: false,
-        tokens: [],
-        strippedEnvironment: false,
-        detail: `the command contains ${describeCharacter(character)}, so it is not a single command`,
-      }
+      return fail(`the command contains ${describeCharacter(character)}, so it is not a single command`)
     }
   }
-  const lineBreak = findUnquotedLineBreak(text)
-  if (lineBreak !== undefined) {
-    return {
-      ok: false,
-      tokens: [],
-      strippedEnvironment: false,
-      detail: `the command contains ${describeCharacter(lineBreak)}, so it is not a single command`,
-    }
+
+  let script
+  try {
+    script = parse(text)
+  } catch {
+    return fail('the command could not be parsed')
   }
-  const tokens = tokenizeCommand(text)
-  if (tokens === undefined) {
-    return { ok: false, tokens: [], strippedEnvironment: false, detail: 'the command has an unbalanced quote' }
+  const firstError = script.errors?.[0]
+  if (firstError !== undefined) {
+    return fail(`the command could not be parsed: ${firstError.message}`)
   }
-  if (tokens.length === 0) return { ok: false, tokens: [], strippedEnvironment: false, detail: 'the command is empty' }
+  if (script.commands.length === 0) return fail('the command is empty')
+  if (script.commands.length !== 1) return fail('the command contains multiple statements')
+
+  const statement = script.commands[0]
+  if (statement === undefined) return fail('the command is empty')
+  if (statement.background === true) return fail('the command runs in the background')
+  if (statement.redirects.length > 0) return fail('the command contains a redirect')
+  if (statement.command.type !== 'Command') {
+    return fail(`the command is ${describeNodeType(statement.command.type)}`)
+  }
+
+  const simple = statement.command
+  if (simple.redirects.length > 0) return fail('the command contains a redirect')
+  if (simple.name === undefined) {
+    return fail('the command carries only environment assignments and no command to judge')
+  }
+
+  const words: Word[] = [simple.name, ...simple.suffix]
+  for (const assignment of simple.prefix) {
+    const hit = inspectWord(assignment.value)
+    if (hit !== undefined) return fail(`the command contains ${describeNodeType(hit)}`)
+  }
+  for (const word of words) {
+    const hit = inspectWord(word)
+    if (hit !== undefined) return fail(`the command contains ${describeNodeType(hit)}`)
+  }
+
+  const tokens = [simple.name.value, ...simple.suffix.map(word => word.value)]
   const stripped = stripEnvironmentPrefixes(tokens)
   if (stripped === undefined) {
-    return {
-      ok: false,
-      tokens: [],
-      strippedEnvironment: false,
-      detail: 'the command carries only environment assignments and no command to judge',
-    }
+    return fail('the command carries only environment assignments and no command to judge')
   }
-  const strippedEnvironment = stripped.length !== tokens.length
+  const strippedEnvironment = simple.prefix.length > 0 || stripped.length !== tokens.length
   return {
     ok: true,
     tokens: stripped,
@@ -199,10 +202,21 @@ export function inspectSingleCommand(command: string, extraDeniedCharacters: rea
 }
 
 /**
+ * 按引号与 bash 词法给出 argv; 不是单条简单命令时返回 undefined.
+ * @param text - 命令文本.
+ * @returns token 数组, 或 undefined.
+ */
+export function tokenizeCommand(text: string): string[] | undefined {
+  const inspection = inspectSingleCommand(text)
+  if (!inspection.ok) return undefined
+  return [...inspection.tokens]
+}
+
+/**
  * 判断一条命令是否命中白名单前缀, 且命令本身是单条简单命令.
  * @param command - 模型给出的完整命令文本.
  * @param prefixes - 允许的前缀表, 每项是空格分隔的命令词序列, 例如 `gh api`.
- * @param extraDeniedCharacters - 额外拒绝的单字符, 与结构元字符一起参与扫描.
+ * @param extraDeniedCharacters - 额外拒绝的单字符, 对命令原文做整串扫描.
  * @returns 判定结果.
  */
 export function judgeSingleCommandPrefix(

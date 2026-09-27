@@ -32,7 +32,7 @@ export interface PluginConfig {
   readonly tools: readonly string[]
   /** 允许自动放行的提权目标档位. */
   readonly allowedEscalationModes: readonly string[]
-  /** 在结构元字符之外额外拒绝的单字符. */
+  /** 在 AST 判定之外额外拒绝的单字符, 对命令原文做整串扫描. */
   readonly extraDeniedCharacters: readonly string[]
   /** 为 false 时, 非提权来源的审批请求也按同一套命令规则应答. */
   readonly onlyEscalations: boolean
