@@ -4,7 +4,8 @@
  * 段只在 night 打开时非空: 关掉时返回空串, 组装出的提示词和没装这个功能时一致.
  * 文案说明三件事: 为什么这次没有人工在旁, 哪些工具会被宿主直接拒掉,
  * 以及提权请求在 night 期间的处置方式. 前缀表本身由 allow-prefixes 段负责列出,
- * 这里只说清 "命中前缀的可以放行, 其余直接拒绝" 这条规则.
+ * 这里只说清 "命中前缀的可以放行, 其余直接拒绝" 这条规则, 并点明别的插件发起的
+ * 审批询问也会被拒 — 否则模型会以为那些卡片还在, 反复重试同一次调用.
  *
  * @module dsh-approve-prefix/prompt/night-mode
  */
@@ -66,6 +67,7 @@ export function renderNightSection(input: NightPromptInput): string {
   }
   lines.push(
     '- A sandbox escalation is approved without asking only when the command matches an allow prefix. Any other escalation is rejected immediately with no prompt; look for another approach, or say what is blocked and move on.',
+    '- Approval prompts raised by other plugins (a tool that asks before its first side effect, for example) are rejected the same way while night mode is on: nothing waits for the user. Do not retry such a call expecting a dialog, and report what could not be done instead.',
     `- Escalation modes that can be auto-approved: ${modes}.`,
     '- Night mode is session state held in memory: it disappears when the harness restarts, and a later request without this section means it is no longer in force.',
   )

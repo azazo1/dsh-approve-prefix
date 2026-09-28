@@ -908,6 +908,72 @@ describe('night 期间的提权审批', () => {
     await host.preExecute({ callId: 'call-2', command: 'rm -rf /' })
     expect(await host.approve(escalation('call-2', 'danger-full-access', SECOND_SESSION), HUMAN_ALLOW)).toBe(HUMAN_ALLOW)
   })
+
+  /*
+   * 别的插件用工具运行时的 ask 决策 (或直接调 ctx.approval.request) 发起的询问, 工具名不在
+   * tools 里, 不参与前缀判定. 夜里这些请求必须在这里被拒掉, 否则会弹成人工卡片, agent 就停住等人.
+   * dsh-plugin-chrome 首次开窗的同意卡片就是这一形态: tools/pre-execute 返回 { kind: 'ask' },
+   * 由工具层转成一次 approval/request.
+   */
+  test('night 期间拒绝其它插件发起的审批询问', async () => {
+    const host = createHost(MATCH_PREFIXES)
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    const asked = { toolName: 'chrome_open', callId: 'call-1', reason: '首次在会话 abc 中启动可见 Chrome 窗口, 理由: 打开内部管理后台核对订单状态. 同意后本会话内的浏览器操作不再询问.', agent: agentOf(FIRST_SESSION) }
+    expect(await host.approve(asked, HUMAN_ALLOW)).toBe('rejected')
+    expect(host.logs.join('\n')).toContain('rejected by night mode')
+  })
+
+  test('其它插件的提权请求在 night 期间同样被拒', async () => {
+    const host = createHost(MATCH_PREFIXES)
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    expect(await host.approve({ ...escalation('call-1'), toolName: 'ptc' }, HUMAN_ALLOW)).toBe('rejected')
+    expect(await host.approve({ ...escalation('call-2'), toolName: 'plugin_manager' }, HUMAN_ALLOW)).toBe('rejected')
+  })
+
+  /*
+   * dsh-write-protect 的 request_writable_path 在工具体内直接调 ctx.approval.request,
+   * toolName 是它自己的工具名, 理由里写的是它要放开哪条保护. 它同样不参与前缀判定,
+   * 夜里必须被拒在这里, 否则申请会挂在一张等人点的卡片上.
+   */
+  test('night 期间拒绝 dsh-write-protect 的可写申请', async () => {
+    const host = createHost(MATCH_PREFIXES)
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    const asked = {
+      toolName: 'request_writable_path',
+      callId: 'call-1',
+      reason: 'grant write access to "/tmp/build-out" (outside the session workspace) for this session: 构建产物需要写在这里',
+      agent: agentOf(FIRST_SESSION),
+    }
+    expect(await host.approve(asked, HUMAN_ALLOW)).toBe('rejected')
+    // override 形态: 放开的是工作区里被保护的某段路径, 理由里带的是命中的模式.
+    const override = {
+      ...asked,
+      callId: 'call-2',
+      reason: 'grant write access to "/w/.git-worktree" for this session, overriding write protection on ".git"',
+    }
+    expect(await host.approve(override, HUMAN_ALLOW)).toBe('rejected')
+  })
+
+  test('关掉 night 后其它插件的询问回到人工卡片', async () => {
+    const host = createHost()
+    const asked = { toolName: 'chrome_open', callId: 'call-1', reason: '首次在会话 abc 中启动可见 Chrome 窗口', agent: agentOf(FIRST_SESSION) }
+    expect(await host.approve(asked, HUMAN_ALLOW)).toBe(HUMAN_ALLOW)
+    expect(await host.approve({ ...escalation('call-2'), toolName: 'python' }, HUMAN_REJECT)).toBe(HUMAN_REJECT)
+  })
+
+  test('night 只拒自己会话里其它插件的询问', async () => {
+    const host = createHost()
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    const asked = (sessionKey: string) => ({ toolName: 'chrome_open', callId: 'call-1', reason: '首次开窗', agent: agentOf(sessionKey) })
+    expect(await host.approve(asked(FIRST_SESSION), HUMAN_ALLOW)).toBe('rejected')
+    expect(await host.approve(asked(SECOND_SESSION), HUMAN_ALLOW)).toBe(HUMAN_ALLOW)
+  })
+
+  test('night 期间取不到会话的询问不拦', async () => {
+    const host = createHost()
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    expect(await host.approve({ toolName: 'chrome_open', callId: 'call-1', reason: '首次开窗' }, HUMAN_ALLOW)).toBe(HUMAN_ALLOW)
+  })
 })
 
 describe('会话临时前缀 HTTP', () => {
