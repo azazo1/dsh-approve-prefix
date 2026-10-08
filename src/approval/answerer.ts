@@ -31,6 +31,7 @@ import { sessionKeyOf } from '../prefix/session-key.js'
 import type { TemporaryPrefixes } from '../prefix/temporary.js'
 import { parseEscalationMode } from './escalation.js'
 import type { PendingCommands } from './pending-commands.js'
+import { NIGHT_REJECTION_GUIDANCE, selfCheckRejection, type RejectionFeedback } from './rejection-feedback.js'
 
 /** 日志里命令文本的最大长度. */
 const COMMAND_LOG_LIMIT = 200
@@ -105,6 +106,8 @@ export interface ApprovalAnswererDeps {
   readonly persistent: () => PersistentPrefixes | undefined
   /** 会话级 night 开关表. */
   readonly night: NightStates
+  /** 只负责把本插件的自动拒绝原因传给同一次工具调用. */
+  readonly feedback: RejectionFeedback
 }
 
 /**
@@ -141,7 +144,9 @@ export function installApprovalAnswerer(ctx: PluginContext, deps: ApprovalAnswer
      */
     if (!config.tools.includes(request.toolName)) {
       if (night) {
-        ctx.logger.info(`dsh-approve-prefix: rejected by night mode an approval from "${request.toolName}", which is not in the configured tools`)
+        const message = `Rejected automatically by dsh-approve-prefix: tool "${request.toolName}" is not configured for prefix-based approval. ${NIGHT_REJECTION_GUIDANCE} This is not a human rejection.`
+        deps.feedback.remember(request, message)
+        ctx.logger.info(`dsh-approve-prefix: rejected by night mode: ${message}`)
         return 'rejected'
       }
       return next()
@@ -166,12 +171,16 @@ export function installApprovalAnswerer(ctx: PluginContext, deps: ApprovalAnswer
     if (!decision.autoApprove) {
       // 前缀未命中且模型自称命中: 直接拒绝, 不走人工.
       if (pending?.selfApproved === true && decision.skip === 'prefix') {
-        ctx.logger.info(`dsh-approve-prefix: rejected a self-approved ${request.toolName} call: ${decision.detail}; command: ${subject}`)
+        const message = selfCheckRejection(decision.detail, night)
+        deps.feedback.remember(request, message)
+        ctx.logger.info(`dsh-approve-prefix: ${message}; tool: ${request.toolName}; command: ${subject}`)
         return 'rejected'
       }
       // night 期间人工不在: 只有命中放行前缀的提权才放行, 其余一律立刻拒绝, 不弹卡片.
       if (night) {
-        ctx.logger.info(`dsh-approve-prefix: rejected by night mode a ${request.toolName} approval: ${decision.detail}; command: ${subject}`)
+        const message = `Rejected automatically by dsh-approve-prefix: ${decision.detail}. ${NIGHT_REJECTION_GUIDANCE} This is not a human rejection. Omitting approved does not bypass Night mode.`
+        deps.feedback.remember(request, message)
+        ctx.logger.info(`dsh-approve-prefix: rejected by night mode: ${message}; tool: ${request.toolName}; command: ${subject}`)
         return 'rejected'
       }
       debug(`dsh-approve-prefix: delegating a ${request.toolName} approval: ${decision.detail}; command: ${subject}`)

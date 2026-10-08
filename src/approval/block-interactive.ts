@@ -14,11 +14,7 @@ import type { PluginContext, ToolExecutionLike } from '../host-types.js'
 import { isNightBlocked } from '../night/blocked.js'
 import type { NightStates } from '../night/state.js'
 import { sessionKeyOf } from '../prefix/session-key.js'
-
-/** 拒绝理由里给模型的指示: 说清为什么被拒, 以及该怎么做. */
-const DENY_SUFFIX
-  = ' Night mode is on for this session and the user is away, so this tool will not reach them. '
-    + 'Decide it yourself, or finish everything else and report what is still open instead of waiting.'
+import { NIGHT_REJECTION_GUIDANCE } from './rejection-feedback.js'
 
 /** 拦截器需要的宿主状态. */
 export interface InteractiveToolGuardDeps {
@@ -49,7 +45,7 @@ export function installInteractiveToolGuard(
     if (!deps.states.isOn(sessionKeyOf(agent))) return next()
     return {
       kind: 'deny',
-      reason: `Tool "${execution.name}" is rejected by night mode.${DENY_SUFFIX}`,
+      reason: `Rejected automatically by dsh-approve-prefix: tool "${execution.name}" requires user interaction. ${NIGHT_REJECTION_GUIDANCE} This is not a human rejection.`,
     }
   }) as unknown as () => void
 }

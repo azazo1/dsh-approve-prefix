@@ -94,6 +94,8 @@ client bundle 必须是自包含的普通脚本, 不能出现 `import`/`export`,
 
 夜间模式那段 (`approve-prefix:night`, order `10310`) 也按会话现算, 关掉时是空串, 空串段不会给提示词增加任何 token.
 
+自动拒绝的原因由 `approval/rejection-feedback.ts` 传递: 审批仍返回 `rejected`, 审计事件与拒绝条件不变. 宿主会把这个结果统一描述为人工拒绝, 所以在 `tools/post-execute` 中只为已关联的失败调用替换这段文案. 反馈按会话 id, 工具名和 callId 关联, 容量沿用 `pendingCapacity`, 只消费一次; 新调用先清理同键旧记录. 成功, 取消, 人工拒绝和下游已有反馈保持原样, 缺少关联身份时不猜测. 文案使用拒绝时的 night 状态, 不在结果提交时重新推断开关.
+
 ## 夜间模式为什么这样接
 
 夜间模式要做两件不同的事, 各用最合适的那条接缝:

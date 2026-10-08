@@ -27,6 +27,7 @@ import type { NightStates } from '../night/state.js';
 import type { PersistentPrefixes } from '../prefix/persistent.js';
 import type { TemporaryPrefixes } from '../prefix/temporary.js';
 import type { PendingCommands } from './pending-commands.js';
+import { type RejectionFeedback } from './rejection-feedback.js';
 /** 一次审批应答的判定输入. */
 export interface ApprovalDecisionInput {
     /** 从审批理由解析出的提权目标档位, 不是提权请求时为 undefined. */
@@ -69,6 +70,8 @@ export interface ApprovalAnswererDeps {
     readonly persistent: () => PersistentPrefixes | undefined;
     /** 会话级 night 开关表. */
     readonly night: NightStates;
+    /** 只负责把本插件的自动拒绝原因传给同一次工具调用. */
+    readonly feedback: RejectionFeedback;
 }
 /**
  * 把应答器以 `prepend` 方式插到审批瀑布最前面, 抢在人工卡片之前应答.

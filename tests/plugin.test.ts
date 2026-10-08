@@ -18,6 +18,8 @@ import type {
   PromptSectionLike,
   ToolDefinitionLike,
   ToolExecutionLike,
+  ToolResultLike,
+  PostToolDecisionLike,
   WebServerRouteLike,
 } from '../src/host-types.ts'
 import { apply } from '../src/index.ts'
@@ -71,6 +73,8 @@ interface FakeHost {
   }): Promise<unknown>
   /** 走一次 approval/request; humanOutcome 表示下游应答者给出的结果. */
   approve(request: ApprovalRequestLike, humanOutcome?: ApprovalOutcome): Promise<ApprovalOutcome>
+  /** 将审批后的宿主错误通过 post-execute 提交. */
+  postExecute(request: ApprovalRequestLike, result: ToolResultLike, nextDecision?: PostToolDecisionLike): Promise<PostToolDecisionLike>
   /** 走一次已注册的 HTTP 路由. */
   request(method: string, url: string, init?: { body?: unknown; headers?: Record<string, string> }): Promise<HttpResult>
   /** 之后的请求按这个结果拒绝; undefined 表示过关. */
@@ -113,6 +117,7 @@ function createHost(
 ): FakeHost {
   const preExecuteListeners: Array<(execution: ToolExecutionLike, next: () => Promise<unknown>) => Promise<unknown>> = []
   const approvalListeners: Array<(request: ApprovalRequestLike, next: () => Promise<ApprovalOutcome>) => Promise<ApprovalOutcome>> = []
+  const postExecuteListeners: Array<(execution: ToolExecutionLike, result: ToolResultLike, next: () => Promise<PostToolDecisionLike>) => Promise<PostToolDecisionLike>> = []
   const changeListeners: Array<() => void> = []
   const assembleListeners: Array<(
     assembly: PromptAssemblyLike,
@@ -178,6 +183,7 @@ function createHost(
     on(event: string, listener: unknown, options?: { prepend?: boolean }): unknown {
       /* 与 cordis 一致: 先注册的先跑, 于是插件内部的注册次序就是优先级. */
       if (event === 'tools/pre-execute') preExecuteListeners.push(listener as never)
+      if (event === 'tools/post-execute') postExecuteListeners.push(listener as never)
       if (event === 'tools/change') changeListeners.push(listener as () => void)
       if (event === 'system-prompt/assemble') assembleListeners.push(listener as never)
       if (event === 'approval/request') {
@@ -273,6 +279,20 @@ function createHost(
       const first = approvalListeners[0]
       if (first === undefined) return humanOutcome
       return first(request, next)
+    },
+    async postExecute(request, result, nextDecision = { kind: 'accept' }) {
+      const execution: ToolExecutionLike = {
+        name: request.toolName,
+        callId: request.callId ?? '',
+        arguments: {},
+        agent: request.agent,
+      }
+      let index = 0
+      const next = async (): Promise<PostToolDecisionLike> => {
+        const listener = postExecuteListeners[index++]
+        return listener === undefined ? nextDecision : listener(execution, result, next)
+      }
+      return next()
     },
     async request(method, url, init) {
       const pathname = url.split('?')[0] ?? url
@@ -536,6 +556,65 @@ describe('模型自报 approved: true', () => {
     const clone = { type: 'object', properties: { command: { type: 'string' } } }
     const assembled = await host.assemble({ tools: [{ name: 'bash', parameters: clone }] })
     expect((assembled.tools[0]?.parameters as { properties: { approved: { type: string } } }).properties.approved.type).toBe('boolean')
+  })
+})
+
+describe('自动拒绝反馈的关联', () => {
+  const failure: ToolResultLike = {
+    isError: true,
+    error: { message: 'the user rejected escalating this command to "danger-full-access"; it stays denied' },
+  }
+
+  test('自检失败仍 rejected, 反馈仅关联同会话同工具同调用且只消费一次', async () => {
+    const host = createHost()
+    const request = escalation('call-feedback')
+    const accept: PostToolDecisionLike = { kind: 'accept' }
+    await host.preExecute({ callId: request.callId!, command: 'git status', approved: true })
+    expect(await host.approve(request, HUMAN_ALLOW)).toBe('rejected')
+    expect(await host.postExecute({ ...request, agent: agentOf(SECOND_SESSION) }, failure, accept)).toBe(accept)
+    expect(await host.postExecute({ ...request, toolName: 'pwsh' }, failure, accept)).toBe(accept)
+    expect(await host.postExecute({ ...request, callId: 'other-call' }, failure, accept)).toBe(accept)
+    const decision = await host.postExecute(request, failure, accept)
+    expect(decision.kind).toBe('block')
+    if (decision.kind === 'block') expect(decision.feedback).toHaveLength(1)
+    expect(await host.postExecute(request, failure, accept)).toBe(accept)
+  })
+
+  test('night 对 shell 和其它插件的拒绝均传递反馈, 缺少调用身份时不猜测', async () => {
+    const host = createHost()
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    for (const toolName of ['bash', 'chrome_open']) {
+      const request = { ...escalation(`feedback-${toolName}`), toolName }
+      expect(await host.approve(request, HUMAN_ALLOW)).toBe('rejected')
+      const result = toolName === 'bash' ? failure : { isError: true, error: { message: `the user rejected tool "${toolName}"` } }
+      expect((await host.postExecute(request, result)).kind).toBe('block')
+    }
+    const unidentified = { ...escalation('missing-id'), callId: undefined }
+    expect(await host.approve(unidentified, HUMAN_ALLOW)).toBe('rejected')
+    const accept: PostToolDecisionLike = { kind: 'accept' }
+    expect(await host.postExecute(unidentified, failure, accept)).toBe(accept)
+  })
+
+  test('不覆盖人工拒绝, 成功, 取消或下游已提供的反馈', async () => {
+    const host = createHost()
+    const accept: PostToolDecisionLike = { kind: 'accept' }
+    const human = escalation('human-call')
+    expect(await host.approve(human, HUMAN_REJECT)).toBe('rejected')
+    expect(await host.postExecute(human, failure, accept)).toBe(accept)
+
+    const cases: Array<[ToolResultLike, PostToolDecisionLike]> = [
+      [{ isError: false }, accept],
+      [{ isError: true, error: { message: 'tool call aborted' } }, accept],
+      [failure, { kind: 'block', feedback: [{ type: 'text', text: 'other policy' }] }],
+      [failure, { kind: 'accept', content: [{ type: 'text', text: 'other feedback' }] }],
+    ]
+    for (const [result, downstream] of cases) {
+      const request = escalation('protected-call')
+      await host.preExecute({ callId: request.callId!, command: 'git status', approved: true })
+      expect(await host.approve(request, HUMAN_ALLOW)).toBe('rejected')
+      expect(await host.postExecute(request, result, downstream)).toBe(downstream)
+      expect(await host.postExecute(request, failure, accept)).toBe(accept)
+    }
   })
 })
 

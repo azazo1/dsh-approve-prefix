@@ -30,6 +30,7 @@ import { installApprovalAnswerer } from './approval/answerer.js'
 import { installApprovedAssemblyPatch, installApprovedSchemaPatch } from './approval/approved-schema.js'
 import { installInteractiveToolGuard } from './approval/block-interactive.js'
 import { PendingCommands } from './approval/pending-commands.js'
+import { RejectionFeedback } from './approval/rejection-feedback.js'
 import { installNightCommand } from './command/night.js'
 import {
   DEFAULT_PREFIXES,
@@ -146,6 +147,8 @@ function toolLookup(value: unknown): ((name: string, scope?: unknown) => unknown
 export function apply(ctx: PluginContext, configInput: Config): void {
   const config = normalizeConfig(configInput)
   const pending = new PendingCommands(config.pendingCapacity)
+  const feedback = new RejectionFeedback(config.pendingCapacity)
+  feedback.install(ctx)
   const temporary = new TemporaryPrefixes(config.temporaryPrefixLimit)
   const night = new NightStates()
   const persistent = new PersistentPrefixes(() => ({
@@ -175,7 +178,7 @@ export function apply(ctx: PluginContext, configInput: Config): void {
     exempt: config.nightExemptTools,
   })
 
-  installApprovalAnswerer(ctx, { config, pending, temporary, night, persistent: () => persistent })
+  installApprovalAnswerer(ctx, { config, pending, temporary, night, feedback, persistent: () => persistent })
   installApprovedAssemblyPatch(ctx, config.tools)
 
   /*

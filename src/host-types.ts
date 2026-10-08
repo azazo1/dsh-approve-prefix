@@ -42,7 +42,21 @@ export interface ToolExecutionLike {
   readonly callId: string
   /** 工具调用参数对象. */
   readonly arguments: unknown
+  /** 当前调用的 agent, 用于关联会话级拒绝提示. */
+  readonly agent?: unknown
 }
+
+/** post-execute 接缝所需的失败信息, 对应宿主 ToolExecutionResult 的相关字段. */
+export interface ToolResultLike {
+  readonly isError: boolean
+  readonly error?: { readonly message: string }
+  readonly additionalContexts?: readonly unknown[]
+}
+
+/** 对应宿主 PostToolDecision; 这里只替换已失败调用的拒绝文案. */
+export type PostToolDecisionLike =
+  | { readonly kind: 'accept'; readonly content?: readonly unknown[]; readonly value?: unknown; readonly additionalContexts?: readonly unknown[] }
+  | { readonly kind: 'block'; readonly feedback: readonly unknown[]; readonly additionalContexts?: readonly unknown[] }
 
 /** 日志接口. */
 export interface PluginLogger {
@@ -211,6 +225,11 @@ export interface PluginContext {
   on(
     event: 'tools/pre-execute',
     listener: (execution: ToolExecutionLike, next: () => Promise<unknown>) => Promise<unknown>,
+  ): unknown
+  /** 在工具结果提交前, 通过宿主 post-execute 接缝对齐拒绝提示. */
+  on(
+    event: 'tools/post-execute',
+    listener: (execution: ToolExecutionLike, result: ToolResultLike, next: () => Promise<PostToolDecisionLike>) => Promise<PostToolDecisionLike>,
   ): unknown
   /** 注册审批瀑布监听器; `prepend` 为 true 时插在人工卡片之前. */
   on(
