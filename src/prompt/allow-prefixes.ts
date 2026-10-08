@@ -9,6 +9,7 @@
  */
 
 import type { PrefixEntry } from '../prefix/entry.js'
+import { APPROVED_PARAMETER_DESCRIPTION } from '../approval/approved-schema.js'
 
 /** 系统提示词段名. */
 export const ALLOW_PREFIX_SECTION_NAME = 'approve-prefix:allow-prefixes'
@@ -134,8 +135,8 @@ export function renderAllowPrefixSection(input: AllowPrefixPromptInput): string 
     ? `A sandbox escalation to ${modes} on a configured shell tool is auto-approved once when the command matches an allow prefix for that tool.`
     : `An approval ask on a configured shell tool is auto-approved once when the command matches an allow prefix for that tool, including an ask that is not a sandbox escalation. Escalation modes that qualify: ${modes}.`
   const caveat = input.onlyEscalations
-    ? 'A wrong escalation mode, a call that is not an escalation, or a command this plugin did not record still goes to a human even when approved is true.'
-    : 'A wrong escalation mode, or a command this plugin did not record, still goes to a human even when approved is true.'
+    ? 'A wrong escalation mode, a call that is not an escalation, or a command this plugin did not record still goes to a human when Night mode is off, even if approved is true.'
+    : 'A wrong escalation mode, or a command this plugin did not record, still goes to a human when Night mode is off, even if approved is true.'
 
   const lines = [
     'Allow prefixes',
@@ -151,8 +152,9 @@ export function renderAllowPrefixSection(input: AllowPrefixPromptInput): string 
   }
   lines.push(
     '',
-    'approved: optional boolean on the tool call. Set true only when this command matches a prefix below. If true and the prefix misses, the call is rejected with no human dialog. Omit it to keep the dialog. A real match is auto-approved either way. '
-      + caveat,
+    `approved: ${APPROVED_PARAMETER_DESCRIPTION}`,
+    'A real prefix match is auto-approved either way. Night mode is separate session state: it applies only when the separate Night mode section says it is on. Do not infer it from this field, from a user message, or from the word "night". A rejection alone does not mean Night mode is on. When Night mode is on, unmatched requests are rejected instead of going to a human.',
+    caveat,
     '',
     'Currently allowed prefixes:',
     'Untagged prefixes come from plugin config and apply to every session. (saved) is stored in settings. (this session) applies only to this session.',

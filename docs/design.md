@@ -88,7 +88,7 @@ client bundle 必须是自包含的普通脚本, 不能出现 `import`/`export`,
 
 模型只填 schema 里出现的字段. 发给模型的 schema 来自 `system-prompt/assemble`, 那一步会 structuredClone parameters, 且 bash / pwsh 注册在 agent preset 平面, 宿主插件的 `tools.get('bash')` 看不到. 因此本插件在 assemble 瀑布里给这一次下发的副本补上可选布尔 `approved`; 全局层若碰巧有同名工具, 仍顺手改活定义并听 `tools/change`. 官方工具包本身不改.
 
-它不能用来骗放行: 前缀命中时本来就会 `allowed-once`, 与有没有这个字段无关. 它只改变 "前缀未命中" 的失败路径: 写了严格布尔 `true` 就 `rejected` (模型已经自称批准, 不再打扰人), 没写或值不对仍弹人工. 档位不在白名单, 不是提权, 或命令没记下, 即使带了这个字段也还是转人工.
+它不能用来骗放行: 前缀命中时本来就会 `allowed-once`, 与有没有这个字段无关. 它只改变 "前缀未命中" 的失败路径: 写了严格布尔 `true` 就 `rejected` (模型已经自称条件成立, 不再打扰人), 没写或值不对仍弹人工. 这个字段不是批准请求, 不会开启或关闭 night, 也不能从用户消息或文字 `night` 推断 night 状态. 在 night 关闭时, 档位不在白名单, 不是提权, 或命令没记下, 即使带了这个字段也还是转人工.
 
 模型要知道此刻有哪些前缀, 才能决定写不写这个字段. `systemPrompt` 就绪后注册 `approve-prefix:allow-prefixes` (order `10300`, 在第一方 persona 后缀之后), 文本每次组装现算, 并关闭变量插值. 静态前缀列在每个配置工具下, 持久前缀按工具过滤, 临时前缀只取组装上下文里那个会话; 没有 agent 时临时表按空处理. 同一前缀只保留更宽的来源. 段里同时用几句话说明单命令匹配和 `approved` 的失败路径, 避免只在参数 schema 里留一句而模型看不到当前表.
 
