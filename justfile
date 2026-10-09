@@ -38,6 +38,6 @@ pack-preview:
     pnpm pack --dry-run
 
 # just verify
-# 类型检查, 测试, 构建和打包预览.
-verify: typecheck test build
+# 类型检查, 构建, 测试和打包预览.
+verify: typecheck build test
     pnpm pack --dry-run

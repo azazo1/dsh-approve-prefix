@@ -53,7 +53,8 @@ src/
 │   └── blocked.ts           夜间被拦工具名单与免拦名单的判定
 ├── prompt/
 │   ├── allow-prefixes.ts    系统提示词段: 当前前缀, approved 与匹配条件
-│   └── night-mode.ts        系统提示词段: 夜间模式生效时的行为规则
+│   ├── night-mode.ts        系统提示词段: 夜间模式生效时的行为规则
+│   └── prefix-updates.ts    前缀集合去重与下一模型步骤的上下文快照
 ├── prefix/
 │   ├── judge.ts             单命令判定与 argv 前缀匹配
 │   ├── pwsh-judge.ts        pwsh ParseInput 摘要的白名单
@@ -95,6 +96,16 @@ client bundle 必须是自包含的普通脚本, 不能出现 `import`/`export`,
 夜间模式那段 (`approve-prefix:night`, order `10310`) 也按会话现算, 关掉时是空串, 空串段不会给提示词增加任何 token.
 
 自动拒绝的原因由 `approval/rejection-feedback.ts` 传递: 审批仍返回 `rejected`, 审计事件与拒绝条件不变. 宿主会把这个结果统一描述为人工拒绝, 所以在 `tools/post-execute` 中只为已关联的失败调用替换这段文案. 反馈按会话 id, 工具名和 callId 关联, 容量沿用 `pendingCapacity`, 只消费一次; 新调用先清理同键旧记录. 成功, 取消, 人工拒绝和下游已有反馈保持原样, 缺少关联身份时不猜测. 文案使用拒绝时的 night 状态, 不在结果提交时重新推断开关.
+
+## 前缀变更的上下文通知
+
+系统提示词继续按当前值组装. 除此之外, 临时前缀通过认证 HTTP 成功替换后, 向对应的已加载 agent 注入完整前缀规则; 持久前缀通过 `loader/volatile-update` 提交后, 向全部已加载 agent 注入各自的规则快照. 两条路径共用系统提示词的渲染函数, 不把其它会话的临时前缀带入通知.
+
+Loader 事件在 Volatile 引用更新后派发, 且只对所属插件 fiber 可见. 监听器注册在插件主 `ctx` 上, 不能放进 `ctx.inject(['agents'], ...)` 的子 fiber, 否则收不到事件. `agents` 服务仍是可选依赖; 缺席时保存与审批照常, 不创建任何新会话.
+
+通知使用 `agent.inject()`, 只排入下一模型步骤, 不使用会唤醒 agent 的 `steer()` 或 `followup()`. 消息带唯一 id, `approve-prefix` 来源与 `snapshot` 元数据, 正文明确新快照替代旧前缀快照, 不改变 night. 宿主按普通输入接缝将消息入队并在消费时记录, 不另造会话日志事件.
+
+变更比较按工具名与规范化后的前缀集合去重, 忽略行顺序和空白差异. 加载初始化, 等价保存, 校验失败, 认证拒绝与仅切换 night 不产生通知. 已加入但随后撤销的前缀各自发布新快照, 未加载的会话在后续加载时读取最新系统提示词.
 
 ## 夜间模式为什么这样接
 

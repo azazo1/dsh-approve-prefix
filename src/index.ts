@@ -11,7 +11,8 @@
  * 4. 有 systemPrompt 服务时, 注册一段系统提示词, 每次组装时列出当前放行前缀, 并简短说明
  *    `approved` 与前缀匹配条件; night 打开时另有一段说明夜里的行为规则;
  * 5. 有 webServer 与 connection 时挂认证 HTTP, 给会话视图 tab 管理当前会话的临时前缀与 night 开关;
- * 6. 有 commands 服务时注册 `/night` 命令, 与对话视图 tab 写同一份会话状态.
+ * 6. 有 commands 服务时注册 `/night` 命令, 与对话视图 tab 写同一份会话状态;
+ * 7. 前缀实际变更后, 向受影响的已加载 agent 注入最新规则快照, 不唤醒空闲会话.
  *
  * 放行前缀来自三处, 全部由用户显式给出: profile 装配层的静态 `prefixes`, settings 里由配置页
  * 维护的持久前缀, 以及只在当前会话生效的临时前缀. 插件不从审批结果里学任何东西:
@@ -38,7 +39,7 @@ import {
   normalizeConfig,
   presentToolNames,
 } from './config.js'
-import type { PluginContext } from './host-types.js'
+import type { AgentsServiceLike, AssembleContextLike, PluginContext } from './host-types.js'
 import { DEFAULT_NIGHT_BLOCKED_TOOLS, DEFAULT_NIGHT_EXEMPT_TOOLS } from './night/blocked.js'
 import { NightStates } from './night/state.js'
 import { PersistentPrefixes } from './prefix/persistent.js'
@@ -54,6 +55,7 @@ import {
   NIGHT_SECTION_ORDER,
   renderNightSection,
 } from './prompt/night-mode.js'
+import { injectAllowPrefixUpdate, prefixEntriesKey } from './prompt/prefix-updates.js'
 import { mountSessionPrefixRoutes } from './session-api/routes.js'
 import type { Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -154,6 +156,42 @@ export function apply(ctx: PluginContext, configInput: Config): void {
   const persistent = new PersistentPrefixes(() => ({
     persistentPrefixes: configInput.persistentPrefixes.get(),
   }))
+  const renderPrefixes = (context: AssembleContextLike): string => {
+    const lookup = toolLookup(ctx.get('tools'))
+    const scope = context.scope ?? context.agent
+    return renderAllowPrefixSection({
+      tools: presentToolNames(
+        config.tools,
+        lookup === undefined ? undefined : name => lookup(name, scope),
+      ),
+      staticPrefixes: config.prefixes,
+      persistent: persistent.list(),
+      temporary: temporary.list(sessionKeyOf(context.agent)),
+      allowedEscalationModes: config.allowedEscalationModes,
+      extraDeniedCharacters: config.extraDeniedCharacters,
+      onlyEscalations: config.onlyEscalations,
+    })
+  }
+  let agents: AgentsServiceLike | undefined
+  ctx.inject(['agents'], (agentCtx) => {
+    const registry = agentCtx.agents
+    if (registry === undefined) return
+    agentCtx.effect(() => {
+      agents = registry
+      return () => { agents = undefined }
+    })
+  })
+  // Loader 在提交 Volatile 值后只通知所属插件 fiber, 监听器必须注册在主 ctx 上.
+  let previousPersistent = prefixEntriesKey(persistent.list())
+  ctx.on('loader/volatile-update', (paths) => {
+    if (!paths.some(path => path[0] === 'persistentPrefixes')) return
+    const current = prefixEntriesKey(persistent.list())
+    if (current === previousPersistent) return
+    previousPersistent = current
+    const liveAgents = agents?.list() ?? []
+    for (const agent of liveAgents) injectAllowPrefixUpdate(agent, renderPrefixes({ agent }))
+    ctx.logger.info(`dsh-approve-prefix: persistent prefixes changed; injected context into ${liveAgents.length} live agents`)
+  })
 
   ctx.on('tools/pre-execute', async (execution, next) => {
     if (config.tools.includes(execution.name)) {
@@ -202,22 +240,7 @@ export function apply(ctx: PluginContext, configInput: Config): void {
       name: ALLOW_PREFIX_SECTION_NAME,
       order: ALLOW_PREFIX_SECTION_ORDER,
       interpolate: false,
-      text: (context) => {
-        const lookup = toolLookup(promptCtx.get('tools'))
-        const scope = context.scope ?? context.agent
-        return renderAllowPrefixSection({
-          tools: presentToolNames(
-            config.tools,
-            lookup === undefined ? undefined : name => lookup(name, scope),
-          ),
-          staticPrefixes: config.prefixes,
-          persistent: persistent.list(),
-          temporary: temporary.list(sessionKeyOf(context.agent)),
-          allowedEscalationModes: config.allowedEscalationModes,
-          extraDeniedCharacters: config.extraDeniedCharacters,
-          onlyEscalations: config.onlyEscalations,
-        })
-      },
+      text: renderPrefixes,
     })
     systemPrompt.section({
       name: NIGHT_SECTION_NAME,
@@ -258,7 +281,18 @@ export function apply(ctx: PluginContext, configInput: Config): void {
       get: (name) => webCtx.get(name),
     }, {
       list: (sessionKey) => temporary.list(sessionKey),
-      replace: (sessionKey, entries) => temporary.replace(sessionKey, entries),
+      replace: (sessionKey, entries) => {
+        const previous = prefixEntriesKey(temporary.list(sessionKey))
+        const error = temporary.replace(sessionKey, entries)
+        if (error === undefined && previous !== prefixEntriesKey(temporary.list(sessionKey))) {
+          const agent = agents?.get(sessionKey)
+          if (agent !== undefined) {
+            injectAllowPrefixUpdate(agent, renderPrefixes({ agent }))
+            webCtx.logger.info(`dsh-approve-prefix: session prefixes changed; injected context into ${sessionKey}`)
+          }
+        }
+        return error
+      },
       defaultTool: () => presentToolNames(config.tools, toolLookup(webCtx.get('tools')))[0] ?? 'bash',
       limit: config.temporaryPrefixLimit,
       night: (sessionKey) => night.isOn(sessionKey),

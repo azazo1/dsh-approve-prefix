@@ -219,8 +219,34 @@ export interface SystemPromptLike {
   section(section: PromptSectionLike): () => void
 }
 
+/** 前缀变更上下文, 对应宿主的 UserMessage 与 snapshot 来源元数据. */
+export interface PrefixUpdateMessageLike {
+  readonly id: string
+  readonly role: 'user'
+  readonly content: readonly { readonly type: 'text'; readonly text: string }[]
+  readonly source: {
+    readonly kind: 'approve-prefix'
+    readonly form: 'snapshot'
+    readonly sections: readonly { readonly name: string; readonly text: string }[]
+  }
+}
+
+/** 已加载 agent 的最小视图; inject 只排入下一步骤, 不唤醒 agent. */
+export interface AgentLike {
+  readonly session: { readonly id: string }
+  inject(message: PrefixUpdateMessageLike): void
+}
+
+/** 对应 dsh-agent 的已加载 agent 注册表. */
+export interface AgentsServiceLike {
+  get(id: string): AgentLike | undefined
+  list(): AgentLike[]
+}
+
 /** 本插件消费的最小 Context 形状. */
 export interface PluginContext {
+  /** Loader 提交 Volatile 值后, 仅向所属插件 fiber 发出变更路径. */
+  on(event: 'loader/volatile-update', listener: (paths: readonly (readonly string[])[]) => void): unknown
   /** 注册 `tools/pre-execute` 监听器, 用于记下每次工具调用的命令原文. */
   on(
     event: 'tools/pre-execute',
@@ -262,6 +288,7 @@ export interface PluginContext {
 
 /** inject 回调里可见的服务: 只有写进 dependencies 的服务才会就绪. */
 export interface InjectedContext extends PluginContext {
+  readonly agents?: AgentsServiceLike
   readonly settings?: SettingsServiceLike
   readonly webServer?: WebServerLike
   readonly connection?: ConnectionServiceLike

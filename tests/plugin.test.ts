@@ -8,6 +8,8 @@ import { describe, expect, test } from 'bun:test'
 import { APPROVED_PARAMETER_DESCRIPTION } from '../src/approval/approved-schema.ts'
 import type {
   ApprovalOutcome,
+  AgentLike,
+  PrefixUpdateMessageLike,
   ApprovalRequestLike,
   CommandDefinitionLike,
   CommandResultLike,
@@ -101,9 +103,14 @@ interface FakeHost {
    * 开关不应该往这里写任何东西, 所以它总是空的; 留着是为了在测试里断言这一点.
    */
   followups: string[]
+  /** 已加载 agent 收到的前缀变更上下文, 按会话分组. */
+  updates: Map<string, PrefixUpdateMessageLike[]>
+  /** 模拟 Loader 提交 Volatile 配置并在主 fiber 上派发变更. */
+  setPersistentPrefixes(entries: PersistentPrefixEntry[], paths?: readonly (readonly string[])[]): void
 }
 
 interface CreateHostOptions {
+  agents?: boolean
   webServer?: boolean
   connection?: boolean
   commands?: boolean
@@ -128,6 +135,14 @@ function createHost(
   const logs: string[] = []
   const prepended: boolean[] = []
   const followups: string[] = []
+  const updates = new Map<string, PrefixUpdateMessageLike[]>([
+    [FIRST_SESSION, []], [SECOND_SESSION, []],
+  ])
+  const liveAgents = new Map<string, AgentLike>([FIRST_SESSION, SECOND_SESSION].map(id => [id, {
+    session: { id },
+    inject(message) { updates.get(id)!.push(message) },
+  }]))
+  const volatileListeners: Array<(paths: readonly (readonly string[])[]) => void> = []
   const commands = new Map<string, CommandDefinitionLike>()
   let rejection: 401 | 403 | undefined
   let connectionPresent = options.connection !== false
@@ -152,6 +167,10 @@ function createHost(
       if (name === 'tools') return ctx.tools
       if (name === 'commands') return ctx.commands
       return undefined
+    },
+    agents: options.agents === false ? undefined : {
+      get: id => liveAgents.get(id),
+      list: () => [...liveAgents.values()],
     },
     tools: {
       get(name: string): ToolDefinitionLike | undefined {
@@ -182,6 +201,7 @@ function createHost(
       : undefined,
     on(event: string, listener: unknown, options?: { prepend?: boolean }): unknown {
       /* 与 cordis 一致: 先注册的先跑, 于是插件内部的注册次序就是优先级. */
+      if (event === 'loader/volatile-update') volatileListeners.push(listener as never)
       if (event === 'tools/pre-execute') preExecuteListeners.push(listener as never)
       if (event === 'tools/post-execute') postExecuteListeners.push(listener as never)
       if (event === 'tools/change') changeListeners.push(listener as () => void)
@@ -194,6 +214,7 @@ function createHost(
     },
     inject(dependencies: readonly string[], callback: (context: InjectedContext) => void): unknown {
       const ready = dependencies.every((dep) => {
+        if (dep === 'agents') return options.agents !== false
         if (dep === 'webServer') return webEnabled
         if (dep === 'connection') return connectionPresent
         if (dep === 'commands') return commandsEnabled
@@ -227,6 +248,11 @@ function createHost(
     logs,
     sections,
     followups,
+    updates,
+    setPersistentPrefixes(entries, paths = [['persistentPrefixes']]) {
+      store.persistentPrefixes = entries
+      for (const listener of volatileListeners) listener(paths)
+    },
     toolParameters(name) {
       return toolRegistry.get(name)?.parameters
     },
@@ -722,6 +748,101 @@ describe('会话级临时前缀', () => {
     expect(await host.approve({ ...escalation('call-1'), toolName: 'custom' })).toBe(HUMAN_ALLOW)
     await host.preExecute({ callId: 'call-2', command: 'gh api user' })
     expect(await host.approve(escalation('call-2'))).toBe(HUMAN_REJECT)
+  })
+})
+
+describe('前缀变更上下文', () => {
+  function expectCurrentSnapshot(host: FakeHost, sessionId: string): PrefixUpdateMessageLike {
+    const message = host.updates.get(sessionId)!.at(-1)!
+    const section = host.sections.find(section => section.name === ALLOW_PREFIX_SECTION_NAME)!
+    const text = typeof section.text === 'function'
+      ? section.text({ agent: { session: { id: sessionId } } })
+      : section.text
+    expect(message.id).toMatch(/^[a-f0-9]{32}$/)
+    expect(message.role).toBe('user')
+    expect(message.source).toEqual({
+      kind: 'approve-prefix', form: 'snapshot',
+      sections: [{ name: ALLOW_PREFIX_SECTION_NAME, text }],
+    })
+    expect(message.content[0]!.text.endsWith(text)).toBe(true)
+    return message
+  }
+
+  test('临时前缀新增和清空只向对应会话注入完整规则, 不唤醒 agent', async () => {
+    const host = createHost(MATCH_PREFIXES, { persistentPrefixes: [{ tool: 'bash', prefix: 'git status' }] })
+    await host.request('PUT', prefixesPath(FIRST_SESSION), {
+      body: { entries: [{ tool: 'bash', prefix: 'npm run' }] },
+    })
+    const added = expectCurrentSnapshot(host, FIRST_SESSION)
+    expect(host.updates.get(FIRST_SESSION)).toHaveLength(1)
+    expect(host.updates.get(SECOND_SESSION)).toHaveLength(0)
+    await host.request('PUT', prefixesPath(FIRST_SESSION), { body: { entries: [] } })
+    const removed = expectCurrentSnapshot(host, FIRST_SESSION)
+    expect(removed.id).not.toBe(added.id)
+    expect(host.updates.get(FIRST_SESSION)).toHaveLength(2)
+    expect(host.followups).toHaveLength(0)
+  })
+
+  test('无效写入, 认证拒绝, 等价保存与 night 变更不注入', async () => {
+    const host = createHost()
+    const entries = [{ tool: 'bash', prefix: 'gh api' }, { tool: 'bash', prefix: 'git status' }]
+    await host.request('PUT', prefixesPath(FIRST_SESSION), { body: { entries } })
+    await host.request('PUT', prefixesPath(FIRST_SESSION), {
+      body: { entries: [{ tool: 'bash', prefix: 'git   status' }, entries[0]] },
+    })
+    expect((await host.request('PUT', prefixesPath(FIRST_SESSION), {
+      body: { entries: [{ tool: 'bash', prefix: 'gh api | bash' }] },
+    })).status).toBe(400)
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    host.setRejection(403)
+    expect((await host.request('PUT', prefixesPath(FIRST_SESSION), { body: { entries: [] } })).status).toBe(403)
+    expect(host.updates.get(FIRST_SESSION)).toHaveLength(1)
+  })
+
+  test('持久前缀提交后通知全部已加载会话, 各自保留本会话临时表', async () => {
+    const host = createHost()
+    await host.request('PUT', prefixesPath(FIRST_SESSION), {
+      body: { entries: [{ tool: 'bash', prefix: 'npm run' }] },
+    })
+    host.setPersistentPrefixes([{ tool: 'bash', prefix: 'gh api' }])
+    const first = expectCurrentSnapshot(host, FIRST_SESSION)
+    const second = expectCurrentSnapshot(host, SECOND_SESSION)
+    expect(first.source.sections).not.toEqual(second.source.sections)
+    expect(first.id).not.toBe(second.id)
+    expect(host.updates.get(FIRST_SESSION)).toHaveLength(2)
+    expect(host.updates.get(SECOND_SESSION)).toHaveLength(1)
+    host.setPersistentPrefixes([])
+    expectCurrentSnapshot(host, FIRST_SESSION)
+    expectCurrentSnapshot(host, SECOND_SESSION)
+    expect(host.updates.get(SECOND_SESSION)).toHaveLength(2)
+    expect(host.followups).toHaveLength(0)
+  })
+
+  test('加载时和等价持久提交不注入, 无关配置路径不触发', () => {
+    const entries = [{ tool: 'bash', prefix: 'gh api' }, { tool: 'bash', prefix: 'git status' }]
+    const host = createHost(undefined, { persistentPrefixes: entries })
+    expect(host.updates.get(FIRST_SESSION)).toHaveLength(0)
+    host.setPersistentPrefixes([{ tool: 'bash', prefix: 'git   status' }, entries[0]])
+    host.setPersistentPrefixes([], [['otherField']])
+    expect(host.updates.get(FIRST_SESSION)).toHaveLength(0)
+    host.setPersistentPrefixes([])
+    expectCurrentSnapshot(host, FIRST_SESSION)
+    expect(host.updates.get(FIRST_SESSION)).toHaveLength(1)
+  })
+
+  test('没有 agents 服务或目标会话未加载时仍保存, 不创建和唤醒会话', async () => {
+    const absent = createHost(undefined, { persistentPrefixes: [] }, { agents: false })
+    absent.setPersistentPrefixes([{ tool: 'bash', prefix: 'gh api' }])
+    expect((await absent.request('PUT', prefixesPath(FIRST_SESSION), {
+      body: { entries: [{ tool: 'bash', prefix: 'npm run' }] },
+    })).status).toBe(200)
+    expect(absent.updates.get(FIRST_SESSION)).toHaveLength(0)
+    const host = createHost()
+    expect((await host.request('PUT', prefixesPath('unloaded'), {
+      body: { entries: [{ tool: 'bash', prefix: 'npm run' }] },
+    })).status).toBe(200)
+    expect(payloadOf(await host.request('GET', prefixesPath('unloaded'))).entries).toHaveLength(1)
+    expect(host.updates.get(FIRST_SESSION)).toHaveLength(0)
   })
 })
 
