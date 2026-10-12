@@ -4,7 +4,8 @@ import { expect, test } from 'bun:test'
 import { Context, Service } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import * as plugin from '../lib/index.js'
-import type { AgentLike, PrefixUpdateMessageLike, PromptSectionLike } from '../src/host-types.ts'
+import type { AgentLike, PrefixUpdateMessageLike, PromptSectionLike, WebServerRouteLike } from '../src/host-types.ts'
+import { statePath } from '../src/session-api/paths.ts'
 import { ALLOW_PREFIX_SECTION_NAME } from '../src/prompt/allow-prefixes.ts'
 
 test('构建入口通过 Loader 接收本 fiber 的持久前缀提交, 保留 fiber 并清理注册', async () => {
@@ -12,6 +13,9 @@ test('构建入口通过 Loader 接收本 fiber 的持久前缀提交, 保留 fi
   const updates: PrefixUpdateMessageLike[] = []
   const agent: AgentLike = { session: { id: 'runtime-session' }, inject: message => { updates.push(message) } }
   const sections = new Map<string, PromptSectionLike>()
+  const routes: WebServerRouteLike[] = []
+  ctx.provide('webServer', { register: (route: WebServerRouteLike) => { routes.push(route) } } as never)
+  ctx.provide('connection', { requestRejection: () => undefined } as never)
   ctx.provide('agents', { get: () => agent, list: () => [agent] } as never)
   class PromptSink extends Service {
     constructor(ctx: Context) { super(ctx, 'systemPrompt') }
@@ -43,10 +47,12 @@ test('构建入口通过 Loader 接收本 fiber 的持久前缀提交, 保留 fi
     await ctx.fiber.await()
     expect(Object.is(entry.fiber, owner)).toBe(true)
     expect(updates).toHaveLength(1)
-    const section = sections.get(ALLOW_PREFIX_SECTION_NAME)!
-    const text = typeof section.text === 'function' ? section.text({ agent }) : section.text
-    expect(updates[0]!.source.sections).toEqual([{ name: section.name, text }])
-    expect(updates[0]!.content[0]!.text.endsWith(text)).toBe(true)
+    const current = [...sections.values()].map(section => ({
+      name: section.name,
+      text: typeof section.text === 'function' ? section.text({ agent }) : section.text,
+    }))
+    expect(updates[0]!.source.sections).toEqual(current)
+    expect(updates[0]!.content[0]!.text.endsWith(current.map(section => section.text).join('\n\n'))).toBe(true)
 
     await entry.update({
       config: { tools: ['bash'], prefixes: ['git status'], persistentPrefixes: [{ tool: 'bash', prefix: 'gh   api' }] },
@@ -55,6 +61,33 @@ test('构建入口通过 Loader 接收本 fiber 的持久前缀提交, 保留 fi
     await entry.update({ config: { tools: ['bash'], prefixes: ['git status'], persistentPrefixes: [] } })
     expect(updates).toHaveLength(2)
     expect(updates[1]!.id).not.toBe(updates[0]!.id)
+
+    const route = routes[0]!
+    expect(routes).toHaveLength(1)
+    for (const state of [
+      { entries: [{ tool: 'bash', prefix: 'flutter' }], night: true },
+      { entries: [], night: false },
+    ]) {
+      const count = updates.length
+      let status = 0
+      let body = ''
+      await route.handler({
+        method: 'PUT', url: statePath(agent.session.id),
+        headers: { 'content-type': 'application/json' },
+        async *[Symbol.asyncIterator]() { yield JSON.stringify(state) },
+      }, {
+        writeHead(value) { status = value },
+        end(value) { body = value ?? '' },
+      })
+      expect(status).toBe(200)
+      expect(JSON.parse(body)).toMatchObject(state)
+      expect(updates).toHaveLength(count + 1)
+      const current = [...sections.values()].map(section => ({
+        name: section.name,
+        text: typeof section.text === 'function' ? section.text({ agent }) : section.text,
+      }))
+      expect(updates.at(-1)!.source.sections).toEqual(current)
+    }
 
     const hooks = ctx.events._hooks['loader/volatile-update'] ?? []
     expect(hooks).toHaveLength(1)

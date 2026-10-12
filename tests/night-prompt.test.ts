@@ -19,8 +19,10 @@ const BASE = {
 }
 
 describe('renderNightSection', () => {
-  test('关掉时是空串, 段名与次序固定', () => {
-    expect(renderNightSection({ ...BASE, on: false })).toBe('')
+  test('关闭也明确渲染状态, 段名与次序固定', () => {
+    const off = renderNightSection({ ...BASE, on: false })
+    expect(off.length).toBeGreaterThan(0)
+    expect(off).not.toBe(renderNightSection(BASE))
     expect(NIGHT_SECTION_NAME).toBe('approve-prefix:night')
     expect(NIGHT_SECTION_ORDER).toBeGreaterThan(10300)
   })

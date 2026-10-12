@@ -16,7 +16,7 @@ import type {
 } from '../host-types.js'
 import { effectiveBlockedTools } from '../night/blocked.js'
 import type { PrefixEntry, PrefixWriteError } from '../prefix/entry.js'
-import { NIGHT_SUFFIX, SESSION_PREFIX_ROOT, sessionResourceFromUrl } from './paths.js'
+import { NIGHT_SUFFIX, PREFIXES_SUFFIX, STATE_SUFFIX, SESSION_PREFIX_ROOT, sessionResourceFromUrl, type SessionResource } from './paths.js'
 
 /** 请求体上限. */
 const MAX_REQUEST_BODY_BYTES = 16 * 1024
@@ -37,17 +37,25 @@ export interface SessionNightPayload {
   readonly exemptTools: readonly string[]
 }
 
+/** 联合读取响应, 使用同一时刻的前缀与 night 状态. */
+export interface SessionApprovalPayload extends SessionPrefixesPayload, SessionNightPayload {}
+
+/** 只提交有变化的字段, 避免覆盖其它入口刚写入的状态. */
+export interface SessionApprovalUpdate {
+  readonly entries?: readonly PrefixEntry[]
+  readonly night?: boolean
+}
+
 /** 路由要读的会话级表面. */
 export interface SessionPrefixRouteHost {
   list(sessionKey: string): readonly PrefixEntry[]
-  replace(sessionKey: string, entries: readonly PrefixEntry[]): PrefixWriteError | undefined
+  /** 校验通过后同步提交全部字段, 最后才发布完整快照. */
+  update(sessionKey: string, state: SessionApprovalUpdate): PrefixWriteError | undefined
   /** 新增一行时的工具名. 可以是字符串, 或每次请求现算 (注册表里谁在, 就用谁). */
   readonly defaultTool: string | (() => string)
   readonly limit: number
   /** 读某个会话的 night 状态. */
   night(sessionKey: string): boolean
-  /** 写某个会话的 night 状态. */
-  setNight(sessionKey: string, on: boolean): void
   /** night 期间的被拦名单. */
   readonly blockedTools: readonly string[]
   /** night 期间的免拦名单. */
@@ -115,28 +123,23 @@ async function handle(req: HttpRequestLike, res: HttpResponseLike, host: Session
   const { sessionId, resource } = resolved
   const method = req.method ?? ''
   if (method === 'GET') {
-    sendJson(res, 200, resource === NIGHT_SUFFIX ? nightPayloadOf(host, sessionId) : payloadOf(host, sessionId))
+    sendJson(res, 200, resourcePayloadOf(host, sessionId, resource))
     return
   }
   if (method === 'PUT') {
-    if (resource === NIGHT_SUFFIX) await handleNightPut(req, res, host, sessionId)
-    else await handlePut(req, res, host, sessionId)
+    await handlePut(req, res, host, sessionId, resource)
     return
   }
   sendEmpty(res, 405, 'GET, PUT')
 }
 
-/**
- * 写入 night 开关.
- *
- * 只接受明确的布尔值: 这里不实现 "取反", 因为两个界面同时写时取反会互相抵消,
- * 而写入目标值总是幂等的.
- */
-async function handleNightPut(
+/** 先校验整个请求, 再由同步 update 一次提交, 不发布中间状态. */
+async function handlePut(
   req: HttpRequestLike,
   res: HttpResponseLike,
   host: SessionPrefixRouteHost,
   sessionId: string,
+  resource: SessionResource,
 ): Promise<void> {
   if (contentTypeOf(req) !== 'application/json') {
     sendJson(res, 400, { error: 'content-type' })
@@ -154,43 +157,40 @@ async function handleNightPut(
     sendJson(res, 400, { error: 'body' })
     return
   }
-  const night = typeof parsed === 'object' && parsed !== null
-    ? (parsed as Record<string, unknown>)['night']
-    : undefined
-  if (typeof night !== 'boolean') {
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     sendJson(res, 400, { error: 'body' })
     return
   }
-  host.setNight(sessionId, night)
-  sendJson(res, 200, nightPayloadOf(host, sessionId))
-}
-
-async function handlePut(
-  req: HttpRequestLike,
-  res: HttpResponseLike,
-  host: SessionPrefixRouteHost,
-  sessionId: string,
-): Promise<void> {
-  if (contentTypeOf(req) !== 'application/json') {
-    sendJson(res, 400, { error: 'content-type' })
-    return
-  }
-  const body = await readBody(req)
-  if (body === undefined) {
+  const record = parsed as Record<string, unknown>
+  const hasEntries = resource === PREFIXES_SUFFIX || (resource === STATE_SUFFIX && 'entries' in record)
+  const hasNight = resource === NIGHT_SUFFIX || (resource === STATE_SUFFIX && 'night' in record)
+  const entries = hasEntries ? decodeEntries(record) : undefined
+  const night = hasNight ? record['night'] : undefined
+  if ((!hasEntries && !hasNight)
+    || (hasEntries && entries === undefined)
+    || (hasNight && typeof night !== 'boolean')) {
     sendJson(res, 400, { error: 'body' })
     return
   }
-  const entries = decodeEntries(body)
-  if (entries === undefined) {
-    sendJson(res, 400, { error: 'body' })
-    return
-  }
-  const error = host.replace(sessionId, entries)
+  const error = host.update(sessionId, {
+    ...(entries === undefined ? {} : { entries }),
+    ...(typeof night === 'boolean' ? { night } : {}),
+  })
   if (error !== undefined) {
     sendJson(res, 400, { error })
     return
   }
-  sendJson(res, 200, payloadOf(host, sessionId))
+  sendJson(res, 200, resourcePayloadOf(host, sessionId, resource))
+}
+
+function resourcePayloadOf(
+  host: SessionPrefixRouteHost,
+  sessionId: string,
+  resource: SessionResource,
+): SessionPrefixesPayload | SessionNightPayload | SessionApprovalPayload {
+  if (resource === NIGHT_SUFFIX) return nightPayloadOf(host, sessionId)
+  if (resource === STATE_SUFFIX) return { ...payloadOf(host, sessionId), ...nightPayloadOf(host, sessionId) }
+  return payloadOf(host, sessionId)
 }
 
 function payloadOf(host: SessionPrefixRouteHost, sessionId: string): SessionPrefixesPayload {
@@ -240,13 +240,7 @@ function chunkToString(chunk: unknown): string {
   throw new TypeError('unsupported request chunk')
 }
 
-function decodeEntries(text: string): PrefixEntry[] | undefined {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text) as unknown
-  } catch {
-    return undefined
-  }
+function decodeEntries(parsed: unknown): PrefixEntry[] | undefined {
   if (typeof parsed !== 'object' || parsed === null) return undefined
   const entries = (parsed as Record<string, unknown>)['entries']
   if (!Array.isArray(entries)) return undefined

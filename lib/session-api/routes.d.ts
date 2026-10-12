@@ -23,17 +23,24 @@ export interface SessionNightPayload {
     /** 出现在被拦名单里但实际放行的工具名. */
     readonly exemptTools: readonly string[];
 }
+/** 联合读取响应, 使用同一时刻的前缀与 night 状态. */
+export interface SessionApprovalPayload extends SessionPrefixesPayload, SessionNightPayload {
+}
+/** 只提交有变化的字段, 避免覆盖其它入口刚写入的状态. */
+export interface SessionApprovalUpdate {
+    readonly entries?: readonly PrefixEntry[];
+    readonly night?: boolean;
+}
 /** 路由要读的会话级表面. */
 export interface SessionPrefixRouteHost {
     list(sessionKey: string): readonly PrefixEntry[];
-    replace(sessionKey: string, entries: readonly PrefixEntry[]): PrefixWriteError | undefined;
+    /** 校验通过后同步提交全部字段, 最后才发布完整快照. */
+    update(sessionKey: string, state: SessionApprovalUpdate): PrefixWriteError | undefined;
     /** 新增一行时的工具名. 可以是字符串, 或每次请求现算 (注册表里谁在, 就用谁). */
     readonly defaultTool: string | (() => string);
     readonly limit: number;
     /** 读某个会话的 night 状态. */
     night(sessionKey: string): boolean;
-    /** 写某个会话的 night 状态. */
-    setNight(sessionKey: string, on: boolean): void;
     /** night 期间的被拦名单. */
     readonly blockedTools: readonly string[];
     /** night 期间的免拦名单. */

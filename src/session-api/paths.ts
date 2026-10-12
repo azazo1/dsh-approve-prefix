@@ -16,8 +16,11 @@ export const PREFIXES_SUFFIX = '/prefixes'
 /** night 开关的后缀. */
 export const NIGHT_SUFFIX = '/night'
 
+/** 前缀与 night 的联合状态后缀. */
+export const STATE_SUFFIX = '/state'
+
 /** 这条根路径下认识的资源. */
-export const SESSION_RESOURCES = [PREFIXES_SUFFIX, NIGHT_SUFFIX] as const
+export const SESSION_RESOURCES = [PREFIXES_SUFFIX, NIGHT_SUFFIX, STATE_SUFFIX] as const
 
 /** 一条会话级资源. */
 export type SessionResource = typeof SESSION_RESOURCES[number]
@@ -41,6 +44,11 @@ export function prefixesPath(sessionId: string): string {
  */
 export function nightPath(sessionId: string): string {
   return `${SESSION_PREFIX_ROOT}/${encodeURIComponent(sessionId)}${NIGHT_SUFFIX}`
+}
+
+/** 拼一条会话的联合审批状态路径. */
+export function statePath(sessionId: string): string {
+  return `${SESSION_PREFIX_ROOT}/${encodeURIComponent(sessionId)}${STATE_SUFFIX}`
 }
 
 /**

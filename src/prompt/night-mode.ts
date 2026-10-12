@@ -1,7 +1,7 @@
 /**
- * night 期间注入的系统提示词段.
+ * 会话级 Night mode 状态与行为规则的系统提示词段.
  *
- * 段只在 night 打开时非空: 关掉时返回空串, 组装出的提示词和没装这个功能时一致.
+ * 开启与关闭都明确给出当前值, 不让模型根据历史消息或段落消失推断状态.
  * 文案说明三件事: 为什么这次没有人工在旁, 哪些工具会被宿主直接拒掉,
  * 以及提权请求在 night 期间的处置方式. 前缀表本身由 allow-prefixes 段负责列出,
  * 这里只说清 "命中前缀的可以放行, 其余直接拒绝" 这条规则, 并点明别的插件发起的
@@ -35,10 +35,16 @@ export interface NightPromptInput {
  *
  * 文案用英文, 与宿主系统提示词的语言一致.
  * @param input - 当前 night 状态.
- * @returns 段文本; 未处于 night 时为空串.
+ * @returns 明确包含 on 或 off 的段文本.
  */
 export function renderNightSection(input: NightPromptInput): string {
-  if (!input.on) return ''
+  if (!input.on) return [
+    'Night mode',
+    '',
+    'Night mode is off for this session. Earlier Night mode on messages no longer apply.',
+    'Night mode does not block interactive tools or reject approval requests. Other approval rules still apply, including rejection of an invalid approved: true self-check.',
+    'When approval is needed and no automatic rule answers it, the harness may ask the user. Do not treat removal of an allow prefix as a requirement to approve every command.',
+  ].join('\n')
   const blocked = effectiveBlockedTools(input.blockedTools, input.exemptTools)
   // 免拦名单是叠加在被拦名单上的例外: 只有确实被拦下又被豁免的工具值得写进提示词.
   const exempt = input.exemptTools.filter(name => input.blockedTools.includes(name))
@@ -69,7 +75,7 @@ export function renderNightSection(input: NightPromptInput): string {
     '- A sandbox escalation is approved without asking only when the command matches an allow prefix. Any other escalation is rejected immediately with no prompt; look for another approach, or say what is blocked and move on.',
     '- Approval prompts raised by other plugins (a tool that asks before its first side effect, for example) are rejected the same way while night mode is on: nothing waits for the user. Do not retry such a call expecting a dialog, and report what could not be done instead.',
     `- Escalation modes that can be auto-approved: ${modes}.`,
-    '- Night mode is session state held in memory: it disappears when the harness restarts, and a later request without this section means it is no longer in force.',
+    '- Night mode is session state held in memory: it disappears when the harness restarts. Use the latest explicit Night mode state; earlier snapshots do not establish the current state.',
   )
   return lines.join('\n')
 }

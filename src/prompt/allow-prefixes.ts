@@ -153,7 +153,7 @@ export function renderAllowPrefixSection(input: AllowPrefixPromptInput): string 
   lines.push(
     '',
     `approved: ${APPROVED_PARAMETER_DESCRIPTION}`,
-    'A real prefix match is auto-approved either way. Night mode is separate session state: it applies only when the separate Night mode section says it is on. Do not infer it from this field, from a user message, or from the word "night". A rejection alone does not mean Night mode is on. When Night mode is on, unmatched requests are rejected instead of going to a human.',
+    'A real prefix match is auto-approved either way. Night mode is separate session state: use the explicit on/off value in the latest Night mode section or approval-state snapshot. Do not infer it from this field, ordinary user text, or earlier snapshots. A rejection alone does not mean Night mode is on. When Night mode is on, unmatched requests are rejected instead of going to a human.',
     caveat,
     '',
     'Currently allowed prefixes:',

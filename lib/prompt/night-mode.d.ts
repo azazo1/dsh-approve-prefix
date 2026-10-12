@@ -1,7 +1,7 @@
 /**
- * night 期间注入的系统提示词段.
+ * 会话级 Night mode 状态与行为规则的系统提示词段.
  *
- * 段只在 night 打开时非空: 关掉时返回空串, 组装出的提示词和没装这个功能时一致.
+ * 开启与关闭都明确给出当前值, 不让模型根据历史消息或段落消失推断状态.
  * 文案说明三件事: 为什么这次没有人工在旁, 哪些工具会被宿主直接拒掉,
  * 以及提权请求在 night 期间的处置方式. 前缀表本身由 allow-prefixes 段负责列出,
  * 这里只说清 "命中前缀的可以放行, 其余直接拒绝" 这条规则, 并点明别的插件发起的
@@ -29,6 +29,6 @@ export interface NightPromptInput {
  *
  * 文案用英文, 与宿主系统提示词的语言一致.
  * @param input - 当前 night 状态.
- * @returns 段文本; 未处于 night 时为空串.
+ * @returns 明确包含 on 或 off 的段文本.
  */
 export declare function renderNightSection(input: NightPromptInput): string;

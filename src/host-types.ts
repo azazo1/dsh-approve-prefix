@@ -219,7 +219,7 @@ export interface SystemPromptLike {
   section(section: PromptSectionLike): () => void
 }
 
-/** 前缀变更上下文, 对应宿主的 UserMessage 与 snapshot 来源元数据. */
+/** 完整审批状态上下文, 对应宿主的 UserMessage 与 snapshot 来源元数据. */
 export interface PrefixUpdateMessageLike {
   readonly id: string
   readonly role: 'user'

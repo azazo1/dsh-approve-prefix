@@ -28,7 +28,7 @@ import { apply } from '../src/index.ts'
 import type { ApprovePrefixSettings, PersistentPrefixEntry } from '../src/prefix/settings.ts'
 import { ALLOW_PREFIX_SECTION_NAME, ALLOW_PREFIX_SECTION_ORDER } from '../src/prompt/allow-prefixes.ts'
 import { NIGHT_SECTION_NAME, NIGHT_SECTION_ORDER } from '../src/prompt/night-mode.ts'
-import { nightPath, prefixesPath } from '../src/session-api/paths.ts'
+import { nightPath, prefixesPath, statePath } from '../src/session-api/paths.ts'
 
 /** 人工拒绝在测试里的占位结果. */
 const HUMAN_REJECT: ApprovalOutcome = 'rejected'
@@ -754,17 +754,20 @@ describe('会话级临时前缀', () => {
 describe('前缀变更上下文', () => {
   function expectCurrentSnapshot(host: FakeHost, sessionId: string): PrefixUpdateMessageLike {
     const message = host.updates.get(sessionId)!.at(-1)!
-    const section = host.sections.find(section => section.name === ALLOW_PREFIX_SECTION_NAME)!
-    const text = typeof section.text === 'function'
-      ? section.text({ agent: { session: { id: sessionId } } })
-      : section.text
+    const sections = host.sections.filter(section => [ALLOW_PREFIX_SECTION_NAME, NIGHT_SECTION_NAME].includes(section.name))
+      .map(section => ({
+        name: section.name,
+        text: typeof section.text === 'function'
+          ? section.text({ agent: { session: { id: sessionId } } })
+          : section.text,
+      }))
     expect(message.id).toMatch(/^[a-f0-9]{32}$/)
     expect(message.role).toBe('user')
     expect(message.source).toEqual({
       kind: 'approve-prefix', form: 'snapshot',
-      sections: [{ name: ALLOW_PREFIX_SECTION_NAME, text }],
+      sections,
     })
-    expect(message.content[0]!.text.endsWith(text)).toBe(true)
+    expect(message.content[0]!.text.endsWith(sections.map(section => section.text).join('\n\n'))).toBe(true)
     return message
   }
 
@@ -783,7 +786,7 @@ describe('前缀变更上下文', () => {
     expect(host.followups).toHaveLength(0)
   })
 
-  test('无效写入, 认证拒绝, 等价保存与 night 变更不注入', async () => {
+  test('无效写入, 认证拒绝与等价保存不注入', async () => {
     const host = createHost()
     const entries = [{ tool: 'bash', prefix: 'gh api' }, { tool: 'bash', prefix: 'git status' }]
     await host.request('PUT', prefixesPath(FIRST_SESSION), { body: { entries } })
@@ -793,10 +796,78 @@ describe('前缀变更上下文', () => {
     expect((await host.request('PUT', prefixesPath(FIRST_SESSION), {
       body: { entries: [{ tool: 'bash', prefix: 'gh api | bash' }] },
     })).status).toBe(400)
-    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
     host.setRejection(403)
     expect((await host.request('PUT', prefixesPath(FIRST_SESSION), { body: { entries: [] } })).status).toBe(403)
     expect(host.updates.get(FIRST_SESSION)).toHaveLength(1)
+  })
+
+  test('联合提交只发布最终快照, 单字段提交保留另一字段, 等价写入不通知', async () => {
+    const host = createHost()
+    const entries = [{ tool: 'bash', prefix: 'flutter' }]
+    expect((await host.request('PUT', statePath(FIRST_SESSION), { body: { entries, night: true } })).status).toBe(200)
+    expect(host.updates.get(FIRST_SESSION)).toHaveLength(1)
+    const on = expectCurrentSnapshot(host, FIRST_SESSION)
+    expect(nightPayloadOf(await host.request('GET', statePath(FIRST_SESSION))).night).toBe(true)
+    expect(payloadOf(await host.request('GET', statePath(FIRST_SESSION))).entries).toEqual(entries)
+
+    expect((await host.request('PUT', statePath(FIRST_SESSION), { body: { entries: [], night: false } })).status).toBe(200)
+    expect(host.updates.get(FIRST_SESSION)).toHaveLength(2)
+    const off = expectCurrentSnapshot(host, FIRST_SESSION)
+    expect(off.source.sections).not.toEqual(on.source.sections)
+    expect(payloadOf(await host.request('GET', statePath(FIRST_SESSION))).entries).toEqual([])
+    expect(nightPayloadOf(await host.request('GET', statePath(FIRST_SESSION))).night).toBe(false)
+
+    await host.request('PUT', statePath(FIRST_SESSION), { body: { entries: [], night: false } })
+    expect(host.updates.get(FIRST_SESSION)).toHaveLength(2)
+    host.runCommand('night', 'on')
+    await host.request('PUT', statePath(FIRST_SESSION), { body: { entries } })
+    expect(nightPayloadOf(await host.request('GET', statePath(FIRST_SESSION))).night).toBe(true)
+    await host.request('PUT', statePath(FIRST_SESSION), { body: { night: false } })
+    expect(payloadOf(await host.request('GET', statePath(FIRST_SESSION))).entries).toEqual(entries)
+    expectCurrentSnapshot(host, FIRST_SESSION)
+    expect(host.updates.get(SECOND_SESSION)).toHaveLength(0)
+    expect(host.followups).toEqual([])
+  })
+
+  test('联合请求任一字段非法或认证失败都不部分写入, 不通知', async () => {
+    const host = createHost({ temporaryPrefixLimit: 1 })
+    const entries = [{ tool: 'bash', prefix: 'flutter' }]
+    await host.request('PUT', statePath(FIRST_SESSION), { body: { entries, night: true } })
+    for (const body of [
+      { entries: [], night: 'off' },
+      { entries: 'invalid', night: false },
+      { entries: [{ tool: 'bash', prefix: 'gh api | bash' }], night: false },
+      { entries: [...entries, { tool: 'bash', prefix: 'gh api' }], night: false },
+      {},
+    ]) {
+      expect((await host.request('PUT', statePath(FIRST_SESSION), { body })).status).toBe(400)
+    }
+    host.setRejection(403)
+    expect((await host.request('PUT', statePath(FIRST_SESSION), { body: { entries: [], night: false } })).status).toBe(403)
+    host.setRejection(undefined)
+    expect(payloadOf(await host.request('GET', statePath(FIRST_SESSION))).entries).toEqual(entries)
+    expect(nightPayloadOf(await host.request('GET', statePath(FIRST_SESSION))).night).toBe(true)
+    expect(host.updates.get(FIRST_SESSION)).toHaveLength(1)
+    expectCurrentSnapshot(host, FIRST_SESSION)
+  })
+
+  test('HTTP 与命令切换均通知完整状态, 持久前缀通知包含各会话当前 night', async () => {
+    const host = createHost()
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    const on = expectCurrentSnapshot(host, FIRST_SESSION)
+    expect(host.updates.get(FIRST_SESSION)).toHaveLength(1)
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
+    host.runCommand('night', 'on')
+    expect(host.updates.get(FIRST_SESSION)).toHaveLength(1)
+    host.setPersistentPrefixes([{ tool: 'bash', prefix: 'gh api' }])
+    const first = expectCurrentSnapshot(host, FIRST_SESSION)
+    const second = expectCurrentSnapshot(host, SECOND_SESSION)
+    expect(first.source.sections[1]).toEqual(on.source.sections[1])
+    expect(second.source.sections[1]).not.toEqual(on.source.sections[1])
+    host.runCommand('night', 'off')
+    expectCurrentSnapshot(host, FIRST_SESSION)
+    expect(host.updates.get(FIRST_SESSION)).toHaveLength(3)
+    expect(host.followups).toEqual([])
   })
 
   test('持久前缀提交后通知全部已加载会话, 各自保留本会话临时表', async () => {
@@ -910,10 +981,11 @@ describe('系统提示词', () => {
     expect(text).not.toContain('/usr/bin/gh')
   })
 
-  test('night 段只在开关打开时非空, 并列出被拦与免拦名单', async () => {
+  test('night 段始终明确状态, 开启时列出被拦与免拦名单', async () => {
     const host = createHost({ allowedEscalationModes: ['danger-full-access'] })
     const night = sectionOf(host.sections, NIGHT_SECTION_NAME)
-    expect(render(night, FIRST_SESSION)).toBe('')
+    const off = render(night, FIRST_SESSION)
+    expect(off.length).toBeGreaterThan(0)
 
     const put = await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: true } })
     expect(put.status).toBe(200)
@@ -923,8 +995,10 @@ describe('系统提示词', () => {
     expect(text).not.toContain(EXEMPT_TOOL)
     expect(text).toContain('danger-full-access')
     expect(text).toContain('disappears when the harness restarts')
-    expect(render(night, SECOND_SESSION)).toBe('')
-    expect(render(night)).toBe('')
+    expect(render(night, SECOND_SESSION)).toBe(off)
+    expect(render(night)).toBe(off)
+    await host.request('PUT', nightPath(FIRST_SESSION), { body: { night: false } })
+    expect(render(night, FIRST_SESSION)).toBe(off)
   })
 })
 
@@ -1019,10 +1093,12 @@ describe('/night 命令', () => {
     expect(createHost({ nightCommand: false }).command('night')).toBeUndefined()
   })
 
-  test('切换开关本身不产生任何模型可见的消息', () => {
+  test('切换开关只排入下一步骤的快照, 不唤醒会话', () => {
     const host = createHost()
     host.runCommand('night', 'on')
     host.runCommand('night', 'off')
+    expect(host.updates.get(FIRST_SESSION)).toHaveLength(2)
+    expect(host.updates.get(SECOND_SESSION)).toHaveLength(0)
     expect(host.followups).toEqual([])
   })
 })

@@ -12,8 +12,10 @@ export declare const SESSION_PREFIX_ROOT = "/api/plugins/dsh-approve-prefix/sess
 export declare const PREFIXES_SUFFIX = "/prefixes";
 /** night 开关的后缀. */
 export declare const NIGHT_SUFFIX = "/night";
+/** 前缀与 night 的联合状态后缀. */
+export declare const STATE_SUFFIX = "/state";
 /** 这条根路径下认识的资源. */
-export declare const SESSION_RESOURCES: readonly ["/prefixes", "/night"];
+export declare const SESSION_RESOURCES: readonly ["/prefixes", "/night", "/state"];
 /** 一条会话级资源. */
 export type SessionResource = typeof SESSION_RESOURCES[number];
 /** 会话 id 白名单: 与 dsh 实际 id (`session-<uuid>` 等) 对齐. */
@@ -30,6 +32,8 @@ export declare function prefixesPath(sessionId: string): string;
  * @returns 绝对路径.
  */
 export declare function nightPath(sessionId: string): string;
+/** 拼一条会话的联合审批状态路径. */
+export declare function statePath(sessionId: string): string;
 /**
  * 从请求 URL 取出会话 id 与资源名.
  * @param url - IncomingMessage.url, 可能带 query.

@@ -12,7 +12,7 @@
  *    `approved` 与前缀匹配条件; night 打开时另有一段说明夜里的行为规则;
  * 5. 有 webServer 与 connection 时挂认证 HTTP, 给会话视图 tab 管理当前会话的临时前缀与 night 开关;
  * 6. 有 commands 服务时注册 `/night` 命令, 与对话视图 tab 写同一份会话状态;
- * 7. 前缀实际变更后, 向受影响的已加载 agent 注入最新规则快照, 不唤醒空闲会话.
+ * 7. 前缀或 night 实际变更后, 向受影响的已加载 agent 注入完整审批状态快照, 不唤醒空闲会话.
  *
  * 放行前缀来自三处, 全部由用户显式给出: profile 装配层的静态 `prefixes`, settings 里由配置页
  * 维护的持久前缀, 以及只在当前会话生效的临时前缀. 插件不从审批结果里学任何东西:
@@ -20,7 +20,7 @@
  *
  * night 是会话级开关, 只存进程内存: 打开期间交互类工具在 `tools/pre-execute` 最外层被拒,
  * 只有命中放行前缀的提权会放行, 其余提权 (以及别的插件发起的审批询问) 直接拒绝而不弹人工卡片.
- * 重启后开关全部归零, 提示词段随之消失, agent 因此能判断 night 已经结束.
+ * 重启后开关全部归零, 提示词明确报告 Night mode 已关闭.
  *
  * 判定失败, 命令取不回或配置非法时都按 "不自动放行" 处理 (fail-closed).
  *
@@ -39,7 +39,7 @@ import {
   normalizeConfig,
   presentToolNames,
 } from './config.js'
-import type { AgentsServiceLike, AssembleContextLike, PluginContext } from './host-types.js'
+import type { AgentLike, AgentsServiceLike, AssembleContextLike, PluginContext } from './host-types.js'
 import { DEFAULT_NIGHT_BLOCKED_TOOLS, DEFAULT_NIGHT_EXEMPT_TOOLS } from './night/blocked.js'
 import { NightStates } from './night/state.js'
 import { PersistentPrefixes } from './prefix/persistent.js'
@@ -55,7 +55,7 @@ import {
   NIGHT_SECTION_ORDER,
   renderNightSection,
 } from './prompt/night-mode.js'
-import { injectAllowPrefixUpdate, prefixEntriesKey } from './prompt/prefix-updates.js'
+import { injectApprovalStateUpdate, prefixEntriesKey } from './prompt/prefix-updates.js'
 import { mountSessionPrefixRoutes } from './session-api/routes.js'
 import type { Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -172,7 +172,22 @@ export function apply(ctx: PluginContext, configInput: Config): void {
       onlyEscalations: config.onlyEscalations,
     })
   }
+  const renderNight = (context: AssembleContextLike): string => renderNightSection({
+    on: night.isOn(sessionKeyOf(context.agent)),
+    blockedTools: config.nightBlockedTools,
+    exemptTools: config.nightExemptTools,
+    allowedEscalationModes: config.allowedEscalationModes,
+  })
+  const injectState = (agent: AgentLike): void => {
+    injectApprovalStateUpdate(agent, renderPrefixes({ agent }), renderNight({ agent }))
+  }
   let agents: AgentsServiceLike | undefined
+  const notifySession = (sessionKey: string): void => {
+    const agent = agents?.get(sessionKey)
+    if (agent === undefined) return
+    injectState(agent)
+    ctx.logger.info(`dsh-approve-prefix: approval state changed; injected context into ${sessionKey}`)
+  }
   ctx.inject(['agents'], (agentCtx) => {
     const registry = agentCtx.agents
     if (registry === undefined) return
@@ -189,7 +204,7 @@ export function apply(ctx: PluginContext, configInput: Config): void {
     if (current === previousPersistent) return
     previousPersistent = current
     const liveAgents = agents?.list() ?? []
-    for (const agent of liveAgents) injectAllowPrefixUpdate(agent, renderPrefixes({ agent }))
+    for (const agent of liveAgents) injectState(agent)
     ctx.logger.info(`dsh-approve-prefix: persistent prefixes changed; injected context into ${liveAgents.length} live agents`)
   })
 
@@ -246,12 +261,7 @@ export function apply(ctx: PluginContext, configInput: Config): void {
       name: NIGHT_SECTION_NAME,
       order: NIGHT_SECTION_ORDER,
       interpolate: false,
-      text: (context) => renderNightSection({
-        on: night.isOn(sessionKeyOf(context.agent)),
-        blockedTools: config.nightBlockedTools,
-        exemptTools: config.nightExemptTools,
-        allowedEscalationModes: config.allowedEscalationModes,
-      }),
+      text: renderNight,
     })
   })
 
@@ -261,7 +271,7 @@ export function apply(ctx: PluginContext, configInput: Config): void {
    */
   if (config.nightCommand) {
     ctx.inject(['commands'], (commandCtx) => {
-      const registered = installNightCommand(commandCtx, { states: night })
+      const registered = installNightCommand(commandCtx, { states: night, onChange: notifySession })
       if (!registered) {
         commandCtx.logger.warn('dsh-approve-prefix: commands service is present but has no register(); /night is unavailable')
       }
@@ -281,22 +291,22 @@ export function apply(ctx: PluginContext, configInput: Config): void {
       get: (name) => webCtx.get(name),
     }, {
       list: (sessionKey) => temporary.list(sessionKey),
-      replace: (sessionKey, entries) => {
-        const previous = prefixEntriesKey(temporary.list(sessionKey))
-        const error = temporary.replace(sessionKey, entries)
-        if (error === undefined && previous !== prefixEntriesKey(temporary.list(sessionKey))) {
-          const agent = agents?.get(sessionKey)
-          if (agent !== undefined) {
-            injectAllowPrefixUpdate(agent, renderPrefixes({ agent }))
-            webCtx.logger.info(`dsh-approve-prefix: session prefixes changed; injected context into ${sessionKey}`)
-          }
+      update: (sessionKey, state) => {
+        const previousPrefixes = prefixEntriesKey(temporary.list(sessionKey))
+        const previousNight = night.isOn(sessionKey)
+        // 前缀校验失败时整批不提交; 两项写入之间不 await, 完成后才发布一个快照.
+        if (state.entries !== undefined) {
+          const error = temporary.replace(sessionKey, state.entries)
+          if (error !== undefined) return error
         }
-        return error
+        if (state.night !== undefined) night.set(sessionKey, state.night)
+        if (previousPrefixes !== prefixEntriesKey(temporary.list(sessionKey))
+          || previousNight !== night.isOn(sessionKey)) notifySession(sessionKey)
+        return undefined
       },
       defaultTool: () => presentToolNames(config.tools, toolLookup(webCtx.get('tools')))[0] ?? 'bash',
       limit: config.temporaryPrefixLimit,
       night: (sessionKey) => night.isOn(sessionKey),
-      setNight: (sessionKey, on) => { night.set(sessionKey, on) },
       blockedTools: config.nightBlockedTools,
       exemptTools: config.nightExemptTools,
     })
