@@ -16,6 +16,15 @@
  * @module dsh-approve-prefix/client
  */
 
+/**
+ * 整个文件包在一个 IIFE 里. combo 把同一个批次里多个插件的 bundle 源码直接首尾拼接进同一个
+ * 脚本作用域, 而 classic script 顶层的 const/let/function 会进入共享的全局词法环境, 于是两个
+ * 插件各写一个 `zh` 就是 `SyntaxError: Identifier 'zh' has already been declared`, 整批都不注册.
+ * 顶层声明一律留在 IIFE 内, 只有这个立即执行调用本身落在脚本作用域.
+ */
+declare const __ModuleLoader__: { load(registration: { id: string, factory: (require: (name: string) => unknown) => unknown }): void }
+
+;(() => {
 /** 插件包名, 必须与 package.json 的 name 以及 loader row 一致. */
 const PLUGIN_ID = 'dsh-approve-prefix'
 /** locale 命名空间. */
@@ -895,9 +904,8 @@ function createFactory(require: (name: string) => unknown): unknown {
   }
 }
 
-declare const __ModuleLoader__: { load(registration: { id: string, factory: (require: (name: string) => unknown) => unknown }): void }
-
 __ModuleLoader__.load({
   id: 'dsh-approve-prefix',
   factory: createFactory,
 })
+})()

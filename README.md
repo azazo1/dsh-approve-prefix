@@ -210,3 +210,9 @@ just verify
 ```
 
 `tests/` 覆盖命令判定, 会话级临时前缀表, 认证 HTTP 与插件接线, 含 "点击允许一次不得带来自动放行" 和前缀变更上下文的回归用例. 真实 Cordis Loader 测试直接加载构建入口, 验证持久前缀提交后的通知与卸载清理, 因此测试前应先构建; `just verify` 已按此顺序执行.
+
+### Client bundle 形态
+
+Web 端的 client bundle 不是浏览器 ESM, 而是 `window.__ModuleLoader__.load({ id, factory })` 的懒加载模块表注册. dsh 把同一个批次里多个插件的 bundle 源码首尾拼接进**同一个 classic script** 再由浏览器执行, 而 classic script 顶层的 `const` / `let` / `function` 会进入跨脚本共享的全局词法环境: 只要两个插件各写一个 `const zh`, 整批脚本就是 `SyntaxError: Identifier 'zh' has already been declared`, 批内所有插件一个都注册不上, 启动页只会显示 `import failed (see console for the import error)`.
+
+所以 `src/client/index.ts` 整个文件包在一个 IIFE 里, 脚本顶层只剩那个立即执行调用, 声明全部留在函数作用域内. 平台模块 (React, 官方控件) 一律经 factory 的 `require` 从模块表取, 产物里不出现任何 `import` / `export`. 这条约束由 `tests/client-bundle.test.ts` 守着: 它解析构建产物, 断言顶层除了注册调用没有别的语句.
