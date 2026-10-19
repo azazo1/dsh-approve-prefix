@@ -95,9 +95,7 @@ client bundle 必须是自包含的普通脚本, 不能出现 `import`/`export`,
 
 夜间模式那段 (`approve-prefix:night`, order `10310`) 也按会话现算, 开启与关闭都明确渲染当前状态, 不依赖段落消失来表达 off.
 
-自动拒绝的原因由 `approval/rejection-feedback.ts` 传递: 审批仍返回 `rejected`, 审计事件与拒绝条件不变. 宿主会把这个结果统一描述为人工拒绝, 所以在 `tools/post-execute` 中只为已关联的失败调用替换这段文案. 反馈按会话 id, 工具名和 callId 关联, 容量沿用 `pendingCapacity`, 只消费一次; 新调用先清理同键旧记录. 缺少关联身份时保留宿主原提示. 文案使用拒绝时的 night 状态, 不在结果提交时重新推断开关.
-
-同一处改写宿主那句 "拒绝即终结" 的尾句. 人工拒绝或下游应答者拒绝时, 错误文本形如 `the user rejected escalating this <主体> to "<档位>"; it stays denied, so stop and explain instead of working around it`; 插件保留前段, 只把尾句换成允许重新阐述后再发起的表述. 这一步不依赖调用身份, 因为它只改文案, 不改判定. 尾句与宿主固定文案不一致时说明宿主改了措辞, 此时原样放行, 不猜它的新意思; 成功, 取消与下游已提供的反馈同样保持原样.
+自动拒绝的原因由 `approval/rejection-feedback.ts` 传递: 审批仍返回 `rejected`, 审计事件与拒绝条件不变. 宿主会把这个结果统一描述为人工拒绝, 所以在 `tools/post-execute` 中只为已关联的失败调用替换这段文案. 反馈按会话 id, 工具名和 callId 关联, 容量沿用 `pendingCapacity`, 只消费一次; 新调用先清理同键旧记录. 成功, 取消, 人工拒绝和下游已有反馈保持原样, 缺少关联身份时不猜测. 文案使用拒绝时的 night 状态, 不在结果提交时重新推断开关.
 
 ## 审批状态变更的上下文通知
 

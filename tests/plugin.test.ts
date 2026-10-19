@@ -586,16 +586,10 @@ describe('模型自报 approved: true', () => {
 })
 
 describe('自动拒绝反馈的关联', () => {
-  /** 宿主拒绝升权的原文, 尾句由 dsh-sandbox 的 approveEscalation 固定. */
-  const HOST_REJECTION = 'the user rejected escalating this command to "danger-full-access"; '
-    + 'it stays denied, so stop and explain instead of working around it'
-  /** 改写后的同一句: 前缀与档位不动, 尾句换成可重新发起的表述. */
-  const RETRYABLE_REJECTION = 'the user rejected escalating this command to "danger-full-access"; '
-    + 'if this command is still necessary, re-request it with a clearer justification, '
-    + 'though a repeat ask may be rejected again'
-  /** 与宿主文案无关的失败, 用来断言改写不越界. */
-  const ABORTED: ToolResultLike = { isError: true, error: { message: 'tool call aborted' } }
-  const failure: ToolResultLike = { isError: true, error: { message: HOST_REJECTION } }
+  const failure: ToolResultLike = {
+    isError: true,
+    error: { message: 'the user rejected escalating this command to "danger-full-access"; it stays denied' },
+  }
 
   test('自检失败仍 rejected, 反馈仅关联同会话同工具同调用且只消费一次', async () => {
     const host = createHost()
@@ -603,13 +597,13 @@ describe('自动拒绝反馈的关联', () => {
     const accept: PostToolDecisionLike = { kind: 'accept' }
     await host.preExecute({ callId: request.callId!, command: 'git status', approved: true })
     expect(await host.approve(request, HUMAN_ALLOW)).toBe('rejected')
-    expect(await host.postExecute({ ...request, agent: agentOf(SECOND_SESSION) }, ABORTED, accept)).toBe(accept)
-    expect(await host.postExecute({ ...request, toolName: 'pwsh' }, ABORTED, accept)).toBe(accept)
-    expect(await host.postExecute({ ...request, callId: 'other-call' }, ABORTED, accept)).toBe(accept)
+    expect(await host.postExecute({ ...request, agent: agentOf(SECOND_SESSION) }, failure, accept)).toBe(accept)
+    expect(await host.postExecute({ ...request, toolName: 'pwsh' }, failure, accept)).toBe(accept)
+    expect(await host.postExecute({ ...request, callId: 'other-call' }, failure, accept)).toBe(accept)
     const decision = await host.postExecute(request, failure, accept)
     expect(decision.kind).toBe('block')
     if (decision.kind === 'block') expect(decision.feedback).toHaveLength(1)
-    expect(await host.postExecute(request, ABORTED, accept)).toBe(accept)
+    expect(await host.postExecute(request, failure, accept)).toBe(accept)
   })
 
   test('night 对 shell 和其它插件的拒绝均传递反馈, 缺少调用身份时不猜测', async () => {
@@ -624,35 +618,19 @@ describe('自动拒绝反馈的关联', () => {
     const unidentified = { ...escalation('missing-id'), callId: undefined }
     expect(await host.approve(unidentified, HUMAN_ALLOW)).toBe('rejected')
     const accept: PostToolDecisionLike = { kind: 'accept' }
-    expect(await host.postExecute(unidentified, ABORTED, accept)).toBe(accept)
+    expect(await host.postExecute(unidentified, failure, accept)).toBe(accept)
   })
 
-  test('人工拒绝只换掉宿主的终结尾句, 前缀与档位原样保留', async () => {
+  test('不覆盖人工拒绝, 成功, 取消或下游已提供的反馈', async () => {
     const host = createHost()
     const accept: PostToolDecisionLike = { kind: 'accept' }
     const human = escalation('human-call')
     expect(await host.approve(human, HUMAN_REJECT)).toBe('rejected')
-    const decision = await host.postExecute(human, failure, accept)
-    expect(decision.kind).toBe('block')
-    if (decision.kind === 'block') {
-      expect(decision.feedback).toEqual([{ type: 'text', text: `Error: ${RETRYABLE_REJECTION}` }])
-    }
+    expect(await host.postExecute(human, failure, accept)).toBe(accept)
 
-    // 尾句与宿主固定文案不一致: 说明宿主换了措辞, 此时不替它下结论.
-    const reworded = escalation('reworded-call')
-    expect(await host.approve(reworded, HUMAN_REJECT)).toBe('rejected')
-    expect(await host.postExecute(reworded, {
-      isError: true,
-      error: { message: 'the user rejected escalating this operation to "workspace-write"; denied for good' },
-    }, accept)).toBe(accept)
-  })
-
-  test('成功, 取消或下游已提供的反馈保持原样', async () => {
-    const host = createHost()
-    const accept: PostToolDecisionLike = { kind: 'accept' }
     const cases: Array<[ToolResultLike, PostToolDecisionLike]> = [
       [{ isError: false }, accept],
-      [ABORTED, accept],
+      [{ isError: true, error: { message: 'tool call aborted' } }, accept],
       [failure, { kind: 'block', feedback: [{ type: 'text', text: 'other policy' }] }],
       [failure, { kind: 'accept', content: [{ type: 'text', text: 'other feedback' }] }],
     ]
@@ -661,7 +639,7 @@ describe('自动拒绝反馈的关联', () => {
       await host.preExecute({ callId: request.callId!, command: 'git status', approved: true })
       expect(await host.approve(request, HUMAN_ALLOW)).toBe('rejected')
       expect(await host.postExecute(request, result, downstream)).toBe(downstream)
-      expect(await host.postExecute(request, ABORTED, accept)).toBe(accept)
+      expect(await host.postExecute(request, failure, accept)).toBe(accept)
     }
   })
 })
