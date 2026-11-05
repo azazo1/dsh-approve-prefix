@@ -58,4 +58,10 @@ describe('patchApprovedTools', () => {
     expect(bash.properties).toHaveProperty('approved')
     expect(read.properties).not.toHaveProperty('approved')
   })
+
+  test('非数组时忽略 (dsh 0.2.2 起装配对象没有 tools)', () => {
+    expect(() => patchApprovedTools(undefined, ['bash'])).not.toThrow()
+    expect(() => patchApprovedTools({ tools: [] }, ['bash'])).not.toThrow()
+    expect(() => patchApprovedTools(null, ['bash'])).not.toThrow()
+  })
 })

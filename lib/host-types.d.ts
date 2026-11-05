@@ -31,6 +31,16 @@ export interface ApprovalRequestLike {
     /** 发起审批的 agent, 用于定位这次请求属于哪个会话. */
     readonly agent?: unknown;
 }
+/**
+ * `agent/created` 的载荷, 对应 dsh-agent 的创建公告.
+ *
+ * 宿主保证 agentCtx 上的 scoped 工具 (含 agent preset 里的 bash / pwsh) 已经注册,
+ * 而首次系统提示词装配还没开始, 所以这是给活定义打补丁的合适时机.
+ */
+export interface AgentCreatedLike {
+    /** 新创建的 agent; 同时也是 tools.get 的 scope 参数. */
+    readonly agent: object;
+}
 /** `tools/pre-execute` 的第一个参数, 只取本插件需要的字段. */
 export interface ToolExecutionLike {
     /** 工具名. */
@@ -180,18 +190,17 @@ export interface AssembleContextLike {
     readonly agent?: unknown;
     readonly scope?: unknown;
 }
-/** 组装结果里一条发给模型的工具 schema, 只取名字和 parameters. */
-export interface AssembledToolSchemaLike {
-    readonly name: string;
-    readonly parameters: unknown;
-}
 /**
- * `system-prompt/assemble` 瀑布的载荷, 对应 dsh-system-prompt 的 `PromptAssembly`.
+ * `system-prompt/assemble` 瀑布的载荷.
  *
- * 这里的 `tools` 已经是 structuredClone 过的副本, 就地补 `approved` 只影响这一次发给模型的 schema.
+ * dsh 0.2.1 及更早对应 `PromptAssembly`, 带 `tools` (已是 structuredClone 过的副本,
+ * 就地补 `approved` 只影响这一次发给模型的 schema).
+ * dsh 0.2.2-rc.1 起瀑布对象是 `PromptPresentation`, 只有 sections / contexts / variables,
+ * 没有 `tools`; 这里必须按可选字段处理, 不能假设它存在.
  */
 export interface PromptAssemblyLike {
-    tools: AssembledToolSchemaLike[];
+    /** 0.2.1 及更早: 本次下发的工具 schema 副本; 0.2.2-rc.1 起不存在. */
+    readonly tools?: unknown;
 }
 /** 注册到 `ctx.systemPrompt` 的一段提示词. */
 export interface PromptSectionLike {
@@ -255,8 +264,14 @@ export interface PluginContext {
     /** 工具注册或卸载时再给 bash / pwsh 补 `approved` 字段. */
     on(event: 'tools/change', listener: () => void): unknown;
     /**
-     * 系统提示词组装瀑布: 在发给模型的工具 schema 副本上补 `approved`.
-     * 必须走这条, 因为 assemble 会 structuredClone parameters, 且 bash 在 agent 平面.
+     * 新 agent 创建完成: scoped 工具已注册, 首次装配尚未开始.
+     * 在这里改活定义, 模型在首轮就能看到 `approved` 字段.
+     */
+    on(event: 'agent/created', listener: (payload: AgentCreatedLike) => void): unknown;
+    /**
+     * 系统提示词组装瀑布: 0.2.1 及更早在下发的 schema 副本上补 `approved`;
+     * 0.2.2-rc.1 起载荷没有 `tools`, 这里只顺带记下 scope, 真正补丁由
+     * `agent/created` / `tools/change` 时改活定义完成.
      */
     on(event: 'system-prompt/assemble', listener: (assembly: PromptAssemblyLike, context: AssembleContextLike, next: () => Promise<PromptAssemblyLike>) => Promise<PromptAssemblyLike>): unknown;
     /** 等可选服务就绪后再执行回调, 不把该服务变成插件的硬依赖. */

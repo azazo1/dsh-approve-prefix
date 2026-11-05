@@ -34,7 +34,7 @@
 
 第 1 条的例外也由夜间模式接管: 请求的工具名不在 `tools` 里时, 插件白天照旧转人工 (不参与前缀判定), 但夜里一律直接 `rejected`, 不弹卡片. 这类请求来自别的插件, 不是沙箱提权而是工具运行时的提问, 例如 dsh-plugin-chrome 在会话首次开窗前发出的那张同意卡 (它在 `tools/pre-execute` 返回 `{ kind: 'ask' }`, 由工具层转成一次审批请求), 以及 ptc / 插件管理器这类自己走提权的工具. 夜里它们能做的只有失败, 而不是把会话挂在 "等你批准" 上.
 
-插件会给 `tools` 配置里的工具 (默认 `bash` 和 `pwsh`) 补一个可选的布尔参数 `approved`, 这样模型才能在 schema 里看见并填写它. 补丁打在 `system-prompt/assemble` 发给模型的 schema 副本上, 因为 bash / pwsh 注册在 agent preset 平面, 全局 `tools.get('bash')` 拿不到那份活定义. 注册表里没有的名字会跳过, 所以 macOS / Linux 上不会改到不存在的 `pwsh`, Windows 上不会改到不存在的 `bash`.
+插件会给 `tools` 配置里的工具 (默认 `bash` 和 `pwsh`) 补一个可选的布尔参数 `approved`, 这样模型才能在 schema 里看见并填写它. bash / pwsh 注册在 agent preset 平面, 全局 `tools.get('bash')` 拿不到那份活定义. dsh 0.2.1 及更早, 补丁打在 `system-prompt/assemble` 发给模型的 schema 副本上; 0.2.2-rc.1 起该装配对象不再带 `tools` (工具声明在瀑布之前就按活定义投影好了), 所以改为在 `agent/created` 与 `tools/change` 时改注册表里的活 parameters, 首轮装配前就生效. 注册表里没有的名字会跳过, 所以 macOS / Linux 上不会改到不存在的 `pwsh`, Windows 上不会改到不存在的 `bash`.
 
 有 `systemPrompt` 时, 插件再注册一段系统提示词, 放在提示词尾部. 每次组装都重写这段, 列出**当前**放行前缀 (静态对每个配置工具生效, 持久按工具, 临时只含当前会话), 并说明匹配条件与 `approved`: 它只是模型完成条件核对后的自检声明, 不是批准请求, 不会开启或关闭 night. 只有单条简单命令且 argv 从前缀开头才算命中; 自检声明为 true 但实际未命中时直接拒绝, 不确定时应省略该字段. 前缀表为空, 或这次组装没有会话身份时, 对应位置写 `none`, 不会把别的会话的临时前缀漏进去. 提示词只列出当前生效的前缀, 不用具体命令当匹配示例, 避免模型把例子当成已放行. Night mode 只在单独的会话状态段明确写明已开启时生效, 不从用户消息或文字 `night` 推断.
 

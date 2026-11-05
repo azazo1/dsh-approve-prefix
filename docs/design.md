@@ -87,7 +87,13 @@ client bundle 必须是自包含的普通脚本, 不能出现 `import`/`export`,
 
 ## 模型自报 `approved: true`
 
-模型只填 schema 里出现的字段. 发给模型的 schema 来自 `system-prompt/assemble`, 那一步会 structuredClone parameters, 且 bash / pwsh 注册在 agent preset 平面, 宿主插件的 `tools.get('bash')` 看不到. 因此本插件在 assemble 瀑布里给这一次下发的副本补上可选布尔 `approved`; 全局层若碰巧有同名工具, 仍顺手改活定义并听 `tools/change`. 官方工具包本身不改.
+模型只填 schema 里出现的字段. bash / pwsh 注册在 agent preset 平面, 宿主插件的 `tools.get('bash')` 看不到全局那份, 所以补丁要落到 agent 平面.
+
+dsh 0.2.1 及更早: `system-prompt/assemble` 的载荷 (`PromptAssembly`) 带 `tools`, 且那一步会 `structuredClone` parameters. 插件在 assemble 瀑布里给这一次下发的副本补上可选布尔 `approved`; 全局层若碰巧有同名工具, 仍顺手改活定义并听 `tools/change`.
+
+dsh 0.2.2-rc.1 起: 载荷变成 `PromptPresentation`, 不再有 `tools`; 工具声明在瀑布之前就按注册表活定义投影并克隆完成, 瀑布之后改不到这一次下发的副本. 于是改为在装配之前改活定义: `agent/created` (宿主保证在 scoped 工具注册之后, 首次装配之前) 与 `tools/change` (bash 因 jobs 服务就绪重新注册) 时用 `tools.get(name, scope)` 补 `approved`. assemble 瀑布仍然保留, 只用来记录 scope 并兼容旧版本; 载荷没有 `tools` 时按空集合处理, 不抛错.
+
+官方工具包本身不改.
 
 它不能用来骗放行: 前缀命中时本来就会 `allowed-once`, 与有没有这个字段无关. 它只改变 "前缀未命中" 的失败路径: 写了严格布尔 `true` 就 `rejected` (模型已经自称条件成立, 不再打扰人), 没写或值不对仍弹人工. 这个字段不是批准请求, 不会开启或关闭 night, 也不能从用户消息或文字 `night` 推断 night 状态. 在 night 关闭时, 档位不在白名单, 不是提权, 或命令没记下, 即使带了这个字段也还是转人工.
 

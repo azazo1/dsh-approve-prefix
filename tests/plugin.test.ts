@@ -89,6 +89,12 @@ interface FakeHost {
   toolParameters(name: string): unknown
   /** 模拟 bash 重新注册, 触发 tools/change. */
   replaceTool(name: string, parameters: Record<string, unknown>): void
+  /** 模拟宿主宣告一个新 agent (agent/created). */
+  createAgent(agent: object): void
+  /** 给某个 agent 平面的工具定义; 与全局注册表分开. */
+  setAgentTool(agent: object, name: string, parameters: Record<string, unknown>): void
+  /** 取某个 agent 平面上某工具的 parameters. */
+  agentToolParameters(agent: object, name: string): unknown
   /** 走一次 system-prompt/assemble, 看发给模型的 schema 补丁. */
   assemble(assembly: PromptAssemblyLike): Promise<PromptAssemblyLike>
   /** 插件注册的系统提示词段. */
@@ -126,6 +132,9 @@ function createHost(
   const approvalListeners: Array<(request: ApprovalRequestLike, next: () => Promise<ApprovalOutcome>) => Promise<ApprovalOutcome>> = []
   const postExecuteListeners: Array<(execution: ToolExecutionLike, result: ToolResultLike, next: () => Promise<PostToolDecisionLike>) => Promise<PostToolDecisionLike>> = []
   const changeListeners: Array<() => void> = []
+  const agentCreatedListeners: Array<(payload: { agent: object }) => void> = []
+  /** agent 平面上的工具: scope -> 工具名 -> 定义. */
+  const agentTools = new Map<object, Map<string, ToolDefinitionLike>>()
   const assembleListeners: Array<(
     assembly: PromptAssemblyLike,
     context: { agent?: unknown; scope?: unknown },
@@ -173,7 +182,10 @@ function createHost(
       list: () => [...liveAgents.values()],
     },
     tools: {
-      get(name: string): ToolDefinitionLike | undefined {
+      get(name: string, scope?: unknown): ToolDefinitionLike | undefined {
+        if (scope !== undefined && typeof scope === 'object' && scope !== null) {
+          return agentTools.get(scope)?.get(name)
+        }
         return toolRegistry.get(name)
       },
     },
@@ -205,6 +217,7 @@ function createHost(
       if (event === 'tools/pre-execute') preExecuteListeners.push(listener as never)
       if (event === 'tools/post-execute') postExecuteListeners.push(listener as never)
       if (event === 'tools/change') changeListeners.push(listener as () => void)
+      if (event === 'agent/created') agentCreatedListeners.push(listener as never)
       if (event === 'system-prompt/assemble') assembleListeners.push(listener as never)
       if (event === 'approval/request') {
         approvalListeners.push(listener as never)
@@ -267,6 +280,17 @@ function createHost(
     replaceTool(name, parameters) {
       toolRegistry.set(name, { parameters })
       for (const listener of changeListeners) listener()
+    },
+    createAgent(agent) {
+      for (const listener of agentCreatedListeners) listener({ agent })
+    },
+    setAgentTool(agent, name, parameters) {
+      const layer = agentTools.get(agent) ?? new Map<string, ToolDefinitionLike>()
+      layer.set(name, { parameters })
+      agentTools.set(agent, layer)
+    },
+    agentToolParameters(agent, name) {
+      return agentTools.get(agent)?.get(name)?.parameters
     },
     async assemble(assembly) {
       let index = 0
@@ -582,6 +606,34 @@ describe('模型自报 approved: true', () => {
     const clone = { type: 'object', properties: { command: { type: 'string' } } }
     const assembled = await host.assemble({ tools: [{ name: 'bash', parameters: clone }] })
     expect((assembled.tools[0]?.parameters as { properties: { approved: { type: string } } }).properties.approved.type).toBe('boolean')
+  })
+
+  test('dsh 0.2.2 起装配对象没有 tools: 不抛错, 原样返回', async () => {
+    const host = createHost({ tools: ['bash'] })
+    const presentation = { sections: [], contexts: [], variables: {} } as unknown as PromptAssemblyLike
+    const assembled = await host.assemble(presentation)
+    expect(assembled).toBe(presentation)
+  })
+
+  test('agent/created 时给 agent 平面的活定义补 approved (0.2.2 首轮就能看到)', () => {
+    const host = createHost({ tools: ['bash'] })
+    const agent = { sessionId: 'agent-plane' }
+    host.setAgentTool(agent, 'bash', { type: 'object', properties: { command: { type: 'string' } } })
+    host.createAgent(agent)
+    const parameters = host.agentToolParameters(agent, 'bash') as { properties: { approved: { type: string } } }
+    expect(parameters.properties.approved.type).toBe('boolean')
+  })
+
+  test('tools/change 后 agent 平面的活定义再补一次', () => {
+    const host = createHost({ tools: ['bash'] })
+    const agent = { sessionId: 'agent-plane' }
+    host.setAgentTool(agent, 'bash', { type: 'object', properties: { command: { type: 'string' } } })
+    host.createAgent(agent)
+    // 重新注册得到新定义对象, tools/change 应把它再补一次.
+    host.setAgentTool(agent, 'bash', { type: 'object', properties: { command: { type: 'string' } } })
+    host.replaceTool('bash', { type: 'object', properties: { command: { type: 'string' } } })
+    const parameters = host.agentToolParameters(agent, 'bash') as { properties: { approved: { type: string } } }
+    expect(parameters.properties.approved.type).toBe('boolean')
   })
 })
 

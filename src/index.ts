@@ -28,7 +28,11 @@
  */
 
 import { installApprovalAnswerer } from './approval/answerer.js'
-import { installApprovedAssemblyPatch, installApprovedSchemaPatch } from './approval/approved-schema.js'
+import {
+  installApprovedAssemblyPatch,
+  installApprovedDefinitionPatch,
+  installApprovedSchemaPatch,
+} from './approval/approved-schema.js'
 import { installInteractiveToolGuard } from './approval/block-interactive.js'
 import { PendingCommands } from './approval/pending-commands.js'
 import { RejectionFeedback } from './approval/rejection-feedback.js'
@@ -232,7 +236,14 @@ export function apply(ctx: PluginContext, configInput: Config): void {
   })
 
   installApprovalAnswerer(ctx, { config, pending, temporary, night, feedback, persistent: () => persistent })
-  installApprovedAssemblyPatch(ctx, config.tools)
+
+  /*
+   * dsh 0.2.2-rc.1 起装配瀑布不再携带 tools, 工具声明在瀑布之前就按活定义投影好了.
+   * 所以除了 0.2.1 那条 assemble 副本路径, 还要在装配之前改注册表里的活 parameters:
+   * `agent/created` 早于首次装配, `tools/change` 覆盖 bash 因 jobs 就绪而重新注册.
+   */
+  const approvedScopes = installApprovedDefinitionPatch(ctx, config.tools)
+  installApprovedAssemblyPatch(ctx, config.tools, approvedScopes)
 
   /*
    * tools 也是可选 inject: 没有注册表时审批判定照常, 发给模型的 schema 仍靠 assemble 补丁.
